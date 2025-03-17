@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 from dataclasses import dataclass, field
 from typing import Mapping, Optional, Union, Any
 from omegaconf import DictConfig
@@ -15,6 +16,8 @@ from pointrix.utils.dataset.dataset_utils import fov2focal, focal2fov
 from pointrix.dataset.base_data import SimplePointCloud
 from dynamic_gaussian_points import DynamicGaussianPointCloud
 from dynamic_gaussian_with_base_point_cloud import DynamicGaussianWithBasePointCloud
+from dynamic_bspline_gaussian_points import DynamicBsplineGaussianPointCloud
+from dynamic_bspline_gaussian_with_base_point_cloud import DynamicBsplineGaussianWithBasePointCloud
 # from lbs_gaussian_point import LBSGaussianPointCloud
 # from dust3r_interface import Dust3R
 from itertools import accumulate
@@ -32,9 +35,9 @@ class SingleAtlasModel(BaseModel):
 
     cfg: Config
 
-    def setup(self, gs_atlas_cfg, point_cloud=None, device="cuda"):
+    def setup(self, gs_atlas_cfg, point_cloud=None, gaussian_class=DynamicGaussianPointCloud, device="cuda"):
         self.gs_atlas_cfg = gs_atlas_cfg
-        self.point_cloud = DynamicGaussianPointCloud(self.cfg.point_cloud, gs_atlas_cfg, point_cloud).to(device)
+        self.point_cloud = gaussian_class(self.cfg.point_cloud, gs_atlas_cfg, point_cloud).to(device)
         self.render_attributes_list = list(gs_atlas_cfg.render_attributes.keys())
 
     def forward(self, ids, batch=None) -> dict:
@@ -90,9 +93,9 @@ class SingleAtlasWithBaseModel(BaseModel):
 
     cfg: Config
 
-    def setup(self, gs_atlas_cfg, base_point_seq=None, device="cuda"):
+    def setup(self, gs_atlas_cfg, base_point_seq=None, gaussian_class=DynamicGaussianWithBasePointCloud, device="cuda"):
         self.gs_atlas_cfg = gs_atlas_cfg
-        self.point_cloud = DynamicGaussianWithBasePointCloud(self.cfg.point_cloud, gs_atlas_cfg, base_point_seq).to(device)
+        self.point_cloud = gaussian_class(self.cfg.point_cloud, gs_atlas_cfg, base_point_seq).to(device)
         self.render_attributes_list = list(gs_atlas_cfg.render_attributes.keys())
 
     def forward(self, ids, batch=None) -> dict:
@@ -213,41 +216,22 @@ class FragModel(BaseModel):
 
     cfg: Config
 
-    def setup_bak(self, *gs_atlas_cfg_list, white_bg=True):
-        self.gs_atlas_cfg_list = gs_atlas_cfg_list
-        self.dust3r = Dust3R("pretrained_weights/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth",
-                             niter=100)
-        # Initialize the point cloud
-        self.atlas_dict = {}
-        for gs_atlas_cfg in self.gs_atlas_cfg_list:
-            name = gs_atlas_cfg.name
-            im_path1, im_path2 = gs_atlas_cfg.start_frame_path, gs_atlas_cfg.end_frame_path
-            dust3r_dict = self.dust3r.infer(im_path1, im_path2)
-            point_cloud = SimplePointCloud(dust3r_dict['pcd'].cpu().numpy(), dust3r_dict['color'].cpu().numpy(), normals=None)
-            self.atlas_dict[name] = SingleAtlasModel(self.cfg, gs_atlas_cfg, point_cloud)
-        self.focal_y_ratio = dust3r_dict['focals'].mean() / dust3r_dict['H']
-        self.white_bg = white_bg 
-
-    def setup_randInit(self, *gs_atlas_cfg_list, white_bg=True):
-        self.gs_atlas_cfg_list = gs_atlas_cfg_list
-        # Initialize the point cloud
-        self.atlas_dict = {}
-        point_cloud = None
-        for gs_atlas_cfg in self.gs_atlas_cfg_list:
-            name = gs_atlas_cfg.name
-            self.atlas_dict[name] = SingleAtlasModel(self.cfg, gs_atlas_cfg, point_cloud)
-        self.focal_y_ratio = 1.0
-        self.white_bg = white_bg
-
     def setup(self, gs_atlas_cfg_list, base_point_seq_list, white_bg=True):
         base_point_seq = torch.cat(base_point_seq_list, dim=1)
         self.gs_atlas_cfg_list = gs_atlas_cfg_list
-        self.atlas_dict = {}
+        self.atlas_dict = nn.ModuleDict({})
         for gs_atlas_cfg in self.gs_atlas_cfg_list:
             name = gs_atlas_cfg.name
             if name == "gs_base":
                 self.atlas_dict[name] = SingleAtlasWithBaseModel(self.cfg, gs_atlas_cfg, base_point_seq)
-                # self.atlas_dict[name] = SingleAtlasWithBaseModel(self.cfg, gs_atlas_cfg, base_point_seq_list[1])
+            elif name == "gs_bspline_base":
+                self.atlas_dict[name] = SingleAtlasWithBaseModel(self.cfg, gs_atlas_cfg, base_point_seq, gaussian_class=DynamicBsplineGaussianWithBasePointCloud)
+            elif name == "gs":
+                point_cloud = None
+                self.atlas_dict[name] = SingleAtlasModel(self.cfg, gs_atlas_cfg, point_cloud)
+            elif name == "gs_bspline":
+                point_cloud = None
+                self.atlas_dict[name] = SingleAtlasModel(self.cfg, gs_atlas_cfg, point_cloud, gaussian_class=DynamicBsplineGaussianPointCloud)
             elif name == "gs_fg":
                 self.atlas_dict[name] = SingleAtlasLBSModel(self.cfg, gs_atlas_cfg, base_point_seq_list[0])
             elif name == "gs_bg":

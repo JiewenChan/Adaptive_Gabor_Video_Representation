@@ -164,7 +164,7 @@ class FragTrainer:
             is_fg: bool = True
 
         gs_atlas_cfg1 = GSAtlasCFG(
-            name='gs_base',
+            name='gs_bspline_base',
             num_images=self.num_imgs,
             start_frame_path='test_data/bear/color/00000.jpg',
             end_frame_path=None,
@@ -253,7 +253,7 @@ class FragTrainer:
         self.depth_loss = ScaleAndShiftInvariantLoss(alpha=0.5, scales=1)
 
     
-    def read_data_simple(self):
+    def read_data_simple(self):        
         # self.seq_dir = 
         # self.img_dir = "/mnt/sda/syt/dataset/laptop_10211/processed/images"
         self.seq_name = self.args.seq_name
@@ -338,7 +338,7 @@ class FragTrainer:
             "confidences": confidences,
             "colors": colors
         }
-
+        
 
     def read_data(self):
         # self.seq_dir = self.args.data_dir
@@ -430,7 +430,7 @@ class FragTrainer:
             "confidences": confidences,
             "colors": colors
         }
-
+       
 
     def construct_render_dict(self, h, w, focal_y_ratio=None):
         """
