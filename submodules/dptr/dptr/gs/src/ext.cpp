@@ -10,6 +10,7 @@
 #include <ewa_project.h>
 #include <project_point.h>
 #include <sort_gaussian.h>
+#include <render_gaussian_ellipse.h>
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("project_point_forward", &projectPointsForward);
@@ -30,4 +31,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("compute_sh_free_backward", &computeSHFreeBackward);
     m.def("alpha_blending_forward_with_bias", &alphaBlendingForwardWithBias);
     m.def("alpha_blending_backward_with_bias", &alphaBlendingBackwardWithBias);
+    m.def("render_gaussian_ellipse_forward", &renderGaussianEllipseForward);
+    m.def("render_gaussian_ellipse_backward", &renderGaussianEllipseBackward);
 }

@@ -9,7 +9,7 @@ from .sort_gaussian import sort_gaussian
 from .alpha_blending import alpha_blending
 from .alpha_blending_enhanced import alpha_blending_enhanced
 from .alpha_blending_with_bias import alpha_blending_with_bias
-
+from .render_gaussian_ellipse import render_gaussian_ellipse
 
 __all__ = [
     "project_point",
@@ -21,7 +21,8 @@ __all__ = [
     "alpha_blending",
     "rasterization",
     "alpha_blending_enhanced",
-    "alpha_blending_with_bias"
+    "alpha_blending_with_bias",
+    "ender_gaussian_ellipse"
 ]
 
 
