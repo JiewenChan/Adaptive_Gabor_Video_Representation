@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import torch.utils.data
 import torch.distributed as dist
-from config import config_parser
+from utils.config import config_parser
 from tensorboardX import SummaryWriter
 from loaders.create_training_dataset import get_training_dataset
 from trainer_fragGS import FragTrainer

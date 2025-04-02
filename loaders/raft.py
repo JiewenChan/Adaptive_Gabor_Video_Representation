@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 import multiprocessing as mp
-from util import normalize_coords, gen_grid_np
+from utils.util import normalize_coords, gen_grid_np
 
 
 def get_sample_weights(flow_stats):

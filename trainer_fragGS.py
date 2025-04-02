@@ -12,7 +12,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
-import util
+import utils.util as util
 from criterion import masked_mse_loss, masked_l1_loss, compute_depth_range_loss, lossfun_distortion
 from pointrix.model.loss import l1_loss, ssim
 from kornia import morphology as morph
@@ -25,7 +25,7 @@ from typing import Any, Optional, Union, List
 from pointrix.camera.cam_utils import construct_canonical_camera, construct_canonical_camera_from_focal
 from pointrix.optimizer import parse_optimizer, parse_scheduler
 from pointrix.renderer import parse_renderer
-from frag_model import FragModel
+from model.frag_model import FragModel
 import dptr.gs as gs
 from tqdm import tqdm
 from pytorch3d.renderer import look_at_rotation
@@ -669,7 +669,7 @@ class FragTrainer:
             loss += loss_mask_attribute_fg * 20
         
         # ### add rigid constraint
-        from geometry_utils import cal_connectivity_from_points, cal_arap_error, cal_smooth_error
+        from utils.geometry_utils import cal_connectivity_from_points, cal_arap_error, cal_smooth_error
         ii, jj, nn, weight = cal_connectivity_from_points(points=render_dict["position"], K=5)
         pos = torch.stack([render_dict["position"], render_dict2["position"]], dim=0)
         rigid_error = cal_arap_error(pos, ii, jj, nn) / 1000.  # this loss is too large
@@ -1290,7 +1290,7 @@ class FragTrainer:
             dinos.append((pred_dino*255).astype(np.uint8))
             ellipses.append((pred_ellipse*255).astype(np.uint8))
         
-        from util import colorize_np
+        from utils.util import colorize_np
         depths = np.stack(depths, axis=0).squeeze()
         depth_max, depth_min = depths.max(), depths.min()
         normed_depth = [colorize_np(x, cmap_name="jet", 
