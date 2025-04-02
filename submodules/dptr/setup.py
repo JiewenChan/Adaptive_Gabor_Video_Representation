@@ -8,7 +8,8 @@ __version__ = "1.0.0"
 
 module_name = "dptr"
 submodule_names = [
-    "gs"
+    "gs",
+    "gabor"
     # more submodules in the future
 ]
 

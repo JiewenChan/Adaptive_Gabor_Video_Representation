@@ -12,6 +12,7 @@ import numpy as np
 import imageio
 import cv2
 import torch
+from tqdm import tqdm
 
 from video3Dflow.utils import median_filter_2d, get_tracks_3d_for_query_frame
 
@@ -43,6 +44,15 @@ class Video3DFlow:
 
         self.scale = 1
         self.extract_fg = True
+
+        self.tracks_cache = {}
+        print("loading tracks data...")
+        for q_idx in tqdm(self.frame_names):
+            for t_idx in self.frame_names:
+                path = f"{self.tracks_dir}/{q_idx}_{t_idx}.npy"
+                if os.path.exists(path):
+                    tracks = np.load(path).astype(np.float32)
+                    self.tracks_cache[f"{q_idx}_{t_idx}"] = tracks
 
 
     def get_tracks_3d(
@@ -94,9 +104,7 @@ class Video3DFlow:
         return tracks_3d, visibles, invisibles, confidences, colors
     
 
-    def load_target_tracks(
-        self, query_index: int, target_indices: list[int], dim: int = 1
-    ):
+    def load_target_tracks(self, query_index: int, target_indices: list[int], dim: int = 1):
         """
         tracks are 2d, occs and uncertainties
         :param dim (int), default 1: dimension to stack the time axis
@@ -106,8 +114,13 @@ class Video3DFlow:
         all_tracks = []
         for ti in target_indices:
             t_name = self.frame_names[ti]
-            path = f"{self.tracks_dir}/{q_name}_{t_name}.npy"
-            tracks = np.load(path).astype(np.float32)
+            cache_key = f"{q_name}_{t_name}"
+            if cache_key in self.tracks_cache:
+                tracks = self.tracks_cache[cache_key]
+            else:
+                path = f"{self.tracks_dir}/{cache_key}.npy"
+                tracks = np.load(path).astype(np.float32)
+                self.tracks_cache[cache_key] = tracks
             all_tracks.append(tracks)
         return torch.from_numpy(np.stack(all_tracks, axis=dim))
     

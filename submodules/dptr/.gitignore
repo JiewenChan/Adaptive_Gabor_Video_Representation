@@ -6,4 +6,3 @@ build
 *.egg-info
 *.so
 *gif
-third_party/*

@@ -14,6 +14,7 @@ from trainer_fragGS import FragTrainer
 torch.manual_seed(1234)
 # from gui import GUI
 # import dearpygui.dearpygui as dpg
+from tqdm import tqdm
 
 
 def synchronize():
@@ -92,69 +93,6 @@ def train(args):
     trainer = FragTrainer(args)
     # trainer = BaseTrainer(args)
 
-    if False:
-        # trainer.draw_gs_trajectory(samp_num=10, gs_num=512)
-        use_mask = True
-        track_imgs = trainer.draw_pixel_trajectory(use_mask=use_mask, radius=4)
-        save_dir = os.path.join(trainer.out_dir, 'tracking')
-        os.makedirs(save_dir, exist_ok=True)
-        import imageio
-        w = track_imgs[0].shape[1]
-        track_imgs = [x[:,w//2:] for x in track_imgs]
-        save_name = "tracking.mp4" if use_mask else "tracking_no_mask.mp4"
-        imageio.mimwrite(os.path.join(save_dir, save_name), track_imgs, fps=15)
-        print()
-
-    if False:
-        trainer.render_video(save_frames=True)
-
-    if False:
-        trainer.render_part(fg=True, threshold=0.5)
-        print()
-
-    if False:
-        ### for cow
-        delta_pos = torch.tensor([[0.6, -0.4, 0.1]], device='cuda')
-        trainer.add_fg(delta_pos, scale=0.8, threshold=0.9)
-        # delta_pos = torch.tensor([[-0.4, 0.1, -0.6]], device='cuda')
-        # trainer.add_fg(delta_pos, scale=1.2, threshold=0.9)
-        ### for camel
-        # delta_pos = torch.tensor([[0.4, 0.3, -0.2]], device='cuda')
-        # trainer.add_fg(delta_pos, scale=0.6, threshold=0.9)
-
-        print()
-
-    if False:
-        trainer.get_interpolation_result(scaling=4)
-    
-    if False:
-        # trainer.optimize_appearance_from_img("000000_edit_mask.png")
-        mask_path = os.path.join(args.data_dir, "masks", "00000.png")
-        # edited_img_path = os.path.join(args.data_dir, "sketch_1.png")
-        edited_img_path = os.path.join("nips_cow.png")
-        trainer.optimize_appearance_from_mask(mask_path, edited_img_path)
-
-    ##### This code is for canonical space visualization
-    #### track-everything's canonical space
-    if False:
-        trainer.save_canonical_rgba_volume(num_pts=5000000, sample_points_from_frames=True)
-    if False:
-        pts_canonical_np, colors_np, mask_np = trainer.save_canonical_points(start_id=0, end_id=dataset.num_imgs, step=10)
-        if False:
-            masks = [extract_mask_edge((m*255).astype(np.uint8), kernel_size=3) == 0 for m in mask_np]
-            points = [p[m.reshape(-1)] for p, m in zip(pts_canonical_np, masks)]
-            colors = [c[m] for c, m in zip(colors_np, masks)]
-            points = np.concatenate(points, axis=0)
-            colors = np.concatenate(colors, axis=0)
-        # print()
-        import trimesh
-        trimesh.PointCloud(pts_canonical_np.reshape(-1,3), colors=colors_np.reshape(-1,3)).export("./debug_all.ply")
-
-    ###### This part is for NVS
-    if False:
-        trainer.get_nvs_rendered_imgs()
-        trainer.get_stereo_rendered_imgs()
-
     ###### config gui for visualization
     from dataclasses import dataclass
     @dataclass
@@ -191,17 +129,21 @@ def train(args):
                 if args.distributed:
                     data_sampler.set_epoch(epoch)
     else:
+        pbar = tqdm(total=args.num_iters, desc='Training')
         while step < args.num_iters + start_step + 1:
             for batch in data_loader:
                 trainer.train_one_step(step, batch)
                 trainer.log(writer, step)
 
                 step += 1
+                pbar.update(1)
+                pbar.set_postfix({'step': step, 'loss': f'{trainer.scalars_to_log.get("loss", 0):.6f}'})
 
                 dataset.set_max_interval(args.start_interval + step // 2000)
 
                 if step >= args.num_iters + start_step + 1:
                     break
+        pbar.close()
 
 
 if __name__ == '__main__':

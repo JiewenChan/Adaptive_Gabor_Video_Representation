@@ -6,6 +6,7 @@ conda install pytorch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0  pytorch-cuda
 conda install -c fvcore -c iopath -c conda-forge fvcore iopath --yes
 conda install -c bottler nvidiacub --yes
 conda install pytorch3d -c pytorch3d --yes
+git submodule update
 pip install submodules/simple-knn/
 pip install submodules/dptr/
 pip install configargparse tensorboardX tensorboard imageio opencv-python matplotlib tqdm scipy pytorch_msssim jaxtyping plyfile diffusers transformers omegaconf tabulate rich kornia open3d mediapy einshape
