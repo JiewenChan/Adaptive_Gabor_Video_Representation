@@ -1273,7 +1273,7 @@ class FragTrainer:
 
     def render_video(self, step=0, save_frames=False):
         ### render image / depth / dinov2
-        images, depths = [], []
+        images, depths, ellipses = [], [], []
         dinos = []
         for id in range(self.num_imgs):
             with torch.no_grad():
@@ -1282,11 +1282,13 @@ class FragTrainer:
                 batch_dict_copy.update({"render_attributes_list" : ['dino_attribute', 'mask_attribute']})
                 render_results = self.renderer.render_batch(render_dict, [batch_dict_copy])
                 pred_rgb = render_results['rgb'][0].clamp(0,1).permute(1,2,0).cpu().numpy()
+                pred_ellipse = render_results['ellipse'][0].clamp(0,1).permute(1,2,0).cpu().numpy()
                 pred_depth = render_results['depth'][0].permute(1,2,0).cpu().numpy()
                 pred_dino = render_results['dino_attribute'][0].permute(1,2,0).cpu().numpy()
             images.append((pred_rgb*255).astype(np.uint8))
             depths.append(pred_depth)
             dinos.append((pred_dino*255).astype(np.uint8))
+            ellipses.append((pred_ellipse*255).astype(np.uint8))
         
         from util import colorize_np
         depths = np.stack(depths, axis=0).squeeze()
@@ -1305,6 +1307,9 @@ class FragTrainer:
         
         imageio.mimwrite(os.path.join(self.out_dir, 'vis', 'render_{:06d}.mp4'.format(step)),
                             images,
+                            quality=8, fps=10)
+        imageio.mimwrite(os.path.join(self.out_dir, 'vis', 'ellipse_{:06d}.mp4'.format(step)),
+                            ellipses,
                             quality=8, fps=10)
         
         # imageio.mimwrite(os.path.join(self.out_dir, 'vis', 'depth_{:06d}.mp4'.format(step)),

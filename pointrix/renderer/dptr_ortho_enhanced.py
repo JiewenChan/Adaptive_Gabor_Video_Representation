@@ -349,6 +349,16 @@ class DPTROrthoEnhancedRender(BaseObject):
         )
         rendered_features_split = Render_Features.split(rendered_features)
 
+        rendered_features_ellipse, _, _ = gs.render_gaussian_ellipse(
+            uv, conic, opacity, render_features,
+            gaussian_ids_sorted, tile_range, bg_color, 
+            width, height, 
+            ndc,
+            abs_ndc,
+            K=num_idx
+        )
+        rendered_features_split.update({"ellipse": rendered_features_ellipse})
+        
         ##### render for depth
         bg_color = 1.0
         rendered_features_depth = gs.alpha_blending(
