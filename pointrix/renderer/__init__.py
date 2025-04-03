@@ -1,6 +1,4 @@
-from .dptr import RENDERER_REGISTRY, DPTRRender
-from .dptr_ortho import DPTROrthoRender
-from .dptr_ortho_enhanced import DPTROrthoEnhancedRender
+from .dptr import RENDERER_REGISTRY
 
 def parse_renderer(cfg, **kwargs):
     """
@@ -12,6 +10,17 @@ def parse_renderer(cfg, **kwargs):
         The configuration dictionary.
     """
     name = cfg.pop("name")
-    if name == 'GaussianSplattingRender':
-        from .base_splatting import GaussianSplattingRender
-    return RENDERER_REGISTRY.get(name)(cfg, **kwargs)
+    if name == "DPTRRender":
+        from .dptr import DPTRRender
+        return DPTRRender(cfg, **kwargs)
+    elif name == "DPTROrthoRender":
+        from .dptr_ortho import DPTROrthoRender
+        return DPTROrthoRender(cfg, **kwargs)
+    elif name == "DPTROrthoEnhancedRender":
+        from .dptr_ortho_enhanced import DPTROrthoEnhancedRender
+        return DPTROrthoEnhancedRender(cfg, **kwargs)
+    elif name == "DPTROrthoEnhancedRenderGabor":
+        from .dptr_ortho_enhanced_gabor import DPTROrthoEnhancedRenderGabor
+        return DPTROrthoEnhancedRenderGabor(cfg, **kwargs)
+    else:
+        raise ValueError(f"Renderer {name} not found")

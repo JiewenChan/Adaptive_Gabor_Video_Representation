@@ -1,7 +1,7 @@
 import torch
 from torch import Tensor
 from jaxtyping import Float
-import dptr.gs._C as _C
+import dptr.gabor._C as _C
 
 
 def render_gaussian_ellipse(

@@ -10,6 +10,12 @@
 #include <torch/torch.h>
 #include <utils.h>
 #include <vector>
+#include <math.h>
+
+// 添加Gabor相关常量
+#define TOTAL_NUM_FREQUENCIES 16
+#define SELECTED_NUM_FREQUENCIES 2
+const float max_frequency = 10.0f;  // 可根据实际需要调整
 
 namespace cg = cooperative_groups;
 
@@ -78,17 +84,39 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
             contributor++;
             float2 vec = {collected_uv[j].x - pixf.x,
                           collected_uv[j].y - pixf.y};
-            float power = -0.5f * (collected_conic[j].x * vec.x * vec.x +
+            
+            // Gabor 核计算
+            float2 dx = vec;
+            float theta = 0.5f; // 方向
+            float cosr = cos(theta);
+            float sinr = sin(theta);
+            
+            // 转换坐标到旋转空间
+            float x_theta = dx.x * cosr + dx.y * sinr;
+            float y_theta = -dx.x * sinr + dx.y * cosr;
+            
+            // 高斯部分计算
+            float gaussian_part = -0.5f * (collected_conic[j].x * vec.x * vec.x +
                                    collected_conic[j].z * vec.y * vec.y) -
                           collected_conic[j].y * vec.x * vec.y;
-
-            if (power > 0)
+            
+            // 跳过高斯部分较弱的点
+            if (gaussian_part > 0.0f)
                 continue;
-
-            // float alpha = min(0.99f, collected_opacity[j] * exp(power));
-            float alpha = min(0.99f, collected_opacity[j] * exp(power) + collected_opacity_bias[j]);
-
-            if (alpha < 1.0 / 255.0f)
+            
+            float g_factor = exp(gaussian_part);
+            
+            // 使用与提供代码相同的Gabor条纹计算
+            float sinusoid_part = 0.0f;
+            for(int w_idx = 0; w_idx < SELECTED_NUM_FREQUENCIES; w_idx++){
+                float f = max_frequency * (w_idx + 1) / (float)TOTAL_NUM_FREQUENCIES;
+                sinusoid_part += 0.5f + 0.5f * cos(f * x_theta);
+            }
+            sinusoid_part /= SELECTED_NUM_FREQUENCIES; // 归一化
+            
+            // 直接使用计算的sinusoid_part作为调制因子，并考虑bias
+            float alpha = min(0.99f, collected_opacity[j] * g_factor * sinusoid_part + collected_opacity_bias[j]);
+            if (alpha < 1.0 / 255.0)
                 continue;
 
             float next_T = T * (1 - alpha);
@@ -199,20 +227,38 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
             float2 vec = {collected_uv[j].x - pixf.x,
                           collected_uv[j].y - pixf.y};
 
-            const float3 conic2d = collected_conic[j];
-            const float power = -0.5f * (conic2d.x * vec.x * vec.x +
-                                         conic2d.z * vec.y * vec.y) -
-                                conic2d.y * vec.x * vec.y;
-            if (power > 0.0f)
+            // Gabor 核计算
+            float2 dx = vec;
+            float theta = 0.5f; // 方向
+            float cosr = cos(theta);
+            float sinr = sin(theta);
+            
+            // 转换坐标到旋转空间
+            float x_theta = dx.x * cosr + dx.y * sinr;
+            float y_theta = -dx.x * sinr + dx.y * cosr;
+            
+            // 高斯部分计算
+            float gaussian_part = -0.5f * (collected_conic[j].x * vec.x * vec.x +
+                                   collected_conic[j].z * vec.y * vec.y) -
+                          collected_conic[j].y * vec.x * vec.y;
+            
+            // 跳过高斯部分较弱的点
+            if (gaussian_part > 0.0f)
                 continue;
-
-            const float G = exp(power);
-            const float opac = collected_opacity[j];
-            const float opac_bias = collected_opacity_bias[j];
-            // const float alpha = min(0.99f, opac * G);
-            const float alpha = min(0.99f, opac * G + opac_bias);
-            // printf("alpha: %f, opac_bias: %f\n", alpha, opac_bias);
-            if (alpha < 1.0f / 255.0f)
+            
+            float g_factor = exp(gaussian_part);
+            
+            // 使用与提供代码相同的Gabor条纹计算
+            float sinusoid_part = 0.0f;
+            for(int w_idx = 0; w_idx < SELECTED_NUM_FREQUENCIES; w_idx++){
+                float f = max_frequency * (w_idx + 1) / (float)TOTAL_NUM_FREQUENCIES;
+                sinusoid_part += 0.5f + 0.5f * cos(f * x_theta);
+            }
+            sinusoid_part /= SELECTED_NUM_FREQUENCIES; // 归一化
+            
+            // 直接使用计算的sinusoid_part作为调制因子，并考虑bias
+            const float alpha = min(0.99f, collected_opacity[j] * g_factor * sinusoid_part + collected_opacity_bias[j]);
+            if (alpha < 1.0 / 255.0)
                 continue;
 
             T = T / (1.f - alpha);
@@ -241,21 +287,51 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
 
             dL_dalpha += (-T_final / (1.f - alpha)) * bg_dot_dpixel;
 
-            const float dL_dG = opac * dL_dalpha;
-            const float2 dG_dvec = {
-                -G * vec.x * conic2d.x - G * vec.y * conic2d.y,
-                -G * vec.y * conic2d.z - G * vec.x * conic2d.y};
+            // 计算对g_factor和sinusoid_part的导数
+            const float dL_dg_factor = collected_opacity[j] * sinusoid_part * dL_dalpha;
+            const float dL_dsinusoid = collected_opacity[j] * g_factor * dL_dalpha;
+            
+            // 计算对每个频率分量的导数
+            float dL_dx_theta = 0.0f;
+            for(int w_idx = 0; w_idx < SELECTED_NUM_FREQUENCIES; w_idx++){
+                float f = max_frequency * (w_idx + 1) / (float)TOTAL_NUM_FREQUENCIES;
+                // 对cos(f*x_theta)求导得到-f*sin(f*x_theta)
+                dL_dx_theta += dL_dsinusoid * 0.5f * (-f) * sin(f * x_theta) / SELECTED_NUM_FREQUENCIES;
+            }
+            
+            // 计算旋转坐标对原始坐标的导数
+            float dx_theta_dvecx = cos(theta);
+            float dx_theta_dvecy = sin(theta);
+            
+            // 计算高斯部分对向量的导数
+            float dpower_dvecx = -collected_conic[j].x * vec.x - collected_conic[j].y * vec.y;
+            float dpower_dvecy = -collected_conic[j].z * vec.y - collected_conic[j].y * vec.x;
+            
+            // 链式法则：组合导数
+            float dg_factor_dvecx = g_factor * dpower_dvecx;
+            float dg_factor_dvecy = g_factor * dpower_dvecy;
+            
+            float dL_dvecx = dL_dg_factor * dg_factor_dvecx + dL_dx_theta * dx_theta_dvecx;
+            float dL_dvecy = dL_dg_factor * dg_factor_dvecy + dL_dx_theta * dx_theta_dvecy;
+            
+            const float2 dL_dvec = {dL_dvecx, dL_dvecy};
 
-            atomicAdd(&dL_duv[global_id].x, dL_dG * dG_dvec.x);
-            atomicAdd(&dL_duv[global_id].y, dL_dG * dG_dvec.y);
-            atomicAdd(&dL_dabs_uv[global_id].x, fabsf(dL_dG * dG_dvec.x));
-            atomicAdd(&dL_dabs_uv[global_id].y, fabsf(dL_dG * dG_dvec.y));
-            atomicAdd(&dL_dconic[global_id].x,
-                      -0.5f * G * vec.x * vec.x * dL_dG);
-            atomicAdd(&dL_dconic[global_id].y, -G * vec.x * vec.y * dL_dG);
-            atomicAdd(&dL_dconic[global_id].z,
-                      -0.5f * G * vec.y * vec.y * dL_dG);
-            atomicAdd(&dL_dopacity[global_id], G * dL_dalpha);
+            atomicAdd(&dL_duv[global_id].x, dL_dvec.x);
+            atomicAdd(&dL_duv[global_id].y, dL_dvec.y);
+            atomicAdd(&dL_dabs_uv[global_id].x, fabsf(dL_dvec.x));
+            atomicAdd(&dL_dabs_uv[global_id].y, fabsf(dL_dvec.y));
+            
+            // 更新对 conic 参数的导数
+            float dconic_x = -0.5f * vec.x * vec.x;
+            float dconic_y = -vec.x * vec.y;
+            float dconic_z = -0.5f * vec.y * vec.y;
+            
+            atomicAdd(&dL_dconic[global_id].x, dL_dg_factor * g_factor * dconic_x);
+            atomicAdd(&dL_dconic[global_id].y, dL_dg_factor * g_factor * dconic_y);
+            atomicAdd(&dL_dconic[global_id].z, dL_dg_factor * g_factor * dconic_z);
+            
+            // 对透明度和偏置的导数
+            atomicAdd(&dL_dopacity[global_id], g_factor * sinusoid_part * dL_dalpha);
             atomicAdd(&dL_dopacity_bias[global_id], dL_dalpha);
 
             done = T < 0.0001f;
