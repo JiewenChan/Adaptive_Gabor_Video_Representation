@@ -21,4 +21,4 @@ Please follow this [instruction](./data_preparation/README.md).
 
 
 ## Training
-python train.py --config configs/config.txt --seq_name $seq_name --num_imgs 250
+python train.py --config configs/base/config.txt --seq_name $seq_name --num_imgs 250
