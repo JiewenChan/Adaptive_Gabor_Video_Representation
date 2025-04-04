@@ -127,7 +127,7 @@ def test(args):
     if True:
         tester.get_interpolation_result(scaling=4)
     
-    if True:
+    if False:
         
         mask_path = os.path.join(args.data_dir, args.seq_name, "masks", "00000.png")
         # edited_img_path = os.path.join(args.data_dir, "sketch_1.png")
