@@ -30,7 +30,7 @@ trainer:
         percent_dense: 0.001
         split_num: 2
         densify_start_iter: 500
-        densify_stop_iter: 100000
+        densify_stop_iter: 8000
         prune_interval: 100
         duplicate_interval: 100
         opacity_reset_interval: 3000
@@ -47,9 +47,11 @@ trainer:
         point_cloud.features_rest:
           lr: 0.000125 # features/20
         point_cloud.scaling:
-          lr: 0.005
-        point_cloud.rotation:
+          lr: 0.0005
+        point_cloud.scale_cubic_node:
           lr: 0.001
+        point_cloud.rotation:
+          lr: 0.0005
         point_cloud.rot_cubic_node:
           lr: 0.001
         point_cloud.opacity:
@@ -72,13 +74,16 @@ trainer:
       point_cloud.rot_cubic_node:
         init:  0.001
         final: 0.00001
+      point_cloud.scale_cubic_node:
+        init:  0.001
+        final: 0.00001
   dataset:
     data_path: ""
     data_type: "FixCameraReFormat"
     cached_image: True
     shuffle: True
     batch_size: 1
-    num_workers: 0
+    num_workers: 4
     scale: 1.0
     white_bg: False
 

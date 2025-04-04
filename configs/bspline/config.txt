@@ -14,7 +14,7 @@ base_idx = 0
 num_imgs = -1
 i_weight = 1000
 num_workers = 4
-num_iters = 5000
+num_iters = 10000
 
 
 loss_rgb_weight = 10.0
