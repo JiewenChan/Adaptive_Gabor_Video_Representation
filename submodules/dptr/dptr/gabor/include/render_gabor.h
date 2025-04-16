@@ -19,25 +19,32 @@
  * @param[in] idx_sorted            Indices of Gaussian points sorted according
  * to [tile_id|depth].
  * @param[in] tile_range             Ranges of indices in idx_sorted for
+ * @param[in] wave_coefficient
+ * @param[in] wave_coefficient_indices 
  * Gaussians participating in alpha blending in each tile.
  * @param[in] bg                    Background color.
  * @param[in] W                     Width of the image.
  * @param[in] H                     Height of the image.
+ * @param[in] K                     Number of Gaussians.
  * @return std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> <br> (1)
  * <b>feature map</b> Rendered feature maps. <br> (2) <b>final_T</b> Final
  * transparency of each pixel. <br> (3) <b>ncontrib</b>
  * Number of gausses involved in alpha blending on each tile <br>
  */
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
-alphaBlendingForward(const torch::Tensor &uv,
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+renderGaborForward(const torch::Tensor &uv,
                      const torch::Tensor &conic,
                      const torch::Tensor &opacity,
                      const torch::Tensor &feature,
                      const torch::Tensor &idx_sorted,
                      const torch::Tensor &tile_range,
+                     const torch::Tensor &wave_coefficient,
+                     const torch::Tensor &wave_coefficient_indices,
                      const float bg,
                      const int W,
-                     const int H);
+                     const int H,
+                     const int K,
+                     const bool enable_truncation);
 
 /**
  * @brief Launching the CUDA kernel to perform alpha blending in a backward
@@ -51,6 +58,8 @@ alphaBlendingForward(const torch::Tensor &uv,
  * @param[in] idx_sorted            Indices of Gaussian points sorted according
  * to [tile_id|depth].
  * @param[in] tile_range             Range of indices in idx_sorted for
+ * @param[in] wave_coefficient
+ * @param[in] wave_coefficient_indices 
  * Gaussians participating in alpha blending in each tile.
  * @param[in] bg                    Background color.
  * @param[in] W                     Width of the image.
@@ -66,41 +75,14 @@ alphaBlendingForward(const torch::Tensor &uv,
  *         (4)<b>dL_dfeature</b> gradients with respect to feature. <br>
  */
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
-alphaBlendingBackward(const torch::Tensor &uv,
+renderGaborBackward(const torch::Tensor &uv,
                       const torch::Tensor &conic,
                       const torch::Tensor &opacity,
                       const torch::Tensor &feature,
                       const torch::Tensor &idx_sorted,
                       const torch::Tensor &tile_range,
-                      const float bg,
-                      const int W,
-                      const int H,
-                      const torch::Tensor &final_T,
-                      const torch::Tensor &ncontrib,
-                      const torch::Tensor &dL_drendered);
-
-
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor>
-alphaBlendingForwardWithBias(const torch::Tensor &uv,
-                     const torch::Tensor &conic,
-                     const torch::Tensor &opacity,
-                     const torch::Tensor &feature,
-                     const torch::Tensor &opacity_bias,
-                     const torch::Tensor &idx_sorted,
-                     const torch::Tensor &tile_range,
-                     const float bg,
-                     const int W,
-                     const int H);
-
-
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
-alphaBlendingBackwardWithBias(const torch::Tensor &uv,
-                      const torch::Tensor &conic,
-                      const torch::Tensor &opacity,
-                      const torch::Tensor &feature,
-                      const torch::Tensor &opacity_bias,
-                      const torch::Tensor &idx_sorted,
-                      const torch::Tensor &tile_range,
+                      const torch::Tensor &wave_coefficient,
+                      const torch::Tensor &wave_coefficient_indices,
                       const float bg,
                       const int W,
                       const int H,

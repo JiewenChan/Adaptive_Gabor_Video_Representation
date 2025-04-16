@@ -13,7 +13,7 @@
 #include <math.h>
 
 // 添加Gabor相关常量
-#define TOTAL_NUM_FREQUENCIES 16
+#define TOTAL_NUM_FREQUENCIES 10
 #define SELECTED_NUM_FREQUENCIES 2
 const float max_frequency = 10.0f;  // 可根据实际需要调整
 
@@ -21,13 +21,15 @@ namespace cg = cooperative_groups;
 
 template <uint32_t CNum>
 __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
-    alphaBlendingForwardEnhancedCUDAKernel(const int P,
+    alphaBlendingForwardEnhancedGaborCUDAKernel(const int P,
                                    const float2 *__restrict__ uv,
                                    const float3 *__restrict__ conic,
                                    const float *__restrict__ opacity,
                                    const float *__restrict__ feature,
                                    const int *__restrict__ idx_sorted,
                                    const int2 *__restrict__ tile_range,
+                                   const float *__restrict__ wave_coefficient,
+                                   const int *__restrict__ wave_coefficient_indices,
                                    const float bg,
                                    const int C,
                                    const int W,
@@ -59,6 +61,8 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
     __shared__ float2 collected_uv[BLOCK_SIZE];
     __shared__ float3 collected_conic[BLOCK_SIZE];
     __shared__ float collected_opacity[BLOCK_SIZE];
+    __shared__ float collected_wave_coefficients[BLOCK_SIZE * SELECTED_NUM_FREQUENCIES];
+    __shared__ int collected_wave_coefficient_indices[BLOCK_SIZE * SELECTED_NUM_FREQUENCIES];
 
     float T = 1.0f;
     uint32_t contributor = 0;
@@ -78,6 +82,10 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
             collected_uv[block.thread_rank()] = uv[coll_id];
             collected_conic[block.thread_rank()] = conic[coll_id];
             collected_opacity[block.thread_rank()] = opacity[coll_id];
+            for(int w_idx = 0; w_idx < SELECTED_NUM_FREQUENCIES; w_idx++) {
+                collected_wave_coefficients[block.thread_rank() * SELECTED_NUM_FREQUENCIES + w_idx] = wave_coefficient[coll_id * SELECTED_NUM_FREQUENCIES + w_idx];
+                collected_wave_coefficient_indices[block.thread_rank() * SELECTED_NUM_FREQUENCIES + w_idx] = wave_coefficient_indices[coll_id * SELECTED_NUM_FREQUENCIES + w_idx];
+            }
         }
         block.sync();
 
@@ -88,7 +96,11 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
             
             // Gabor 核计算
             float2 dx = vec;
-            float theta = 0.5f; // 方向
+            
+            float a = collected_conic[j].x;  // Σ^{-1}_{11}
+            float b = collected_conic[j].y;  // Σ^{-1}_{12} = Σ^{-1}_{21}
+            float c = collected_conic[j].z;  // Σ^{-1}_{22}
+            float theta = 0.5f * atan2f(2.0f * b, a - c);; // 方向
             float cosr = cos(theta);
             float sinr = sin(theta);
             
@@ -110,8 +122,9 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
             // 使用与提供代码相同的Gabor条纹计算
             float sinusoid_part = 0.0f;
             for(int w_idx = 0; w_idx < SELECTED_NUM_FREQUENCIES; w_idx++){
-                float f = max_frequency * (w_idx + 1) / (float)TOTAL_NUM_FREQUENCIES;
-                sinusoid_part += 0.5f + 0.5f * cos(f * x_theta);
+                // float f = max_frequency * (collected_wave_coefficient_indices[j * SELECTED_NUM_FREQUENCIES + w_idx] + 1) / (float)TOTAL_NUM_FREQUENCIES;
+                float f = max_frequency * (w_idx + 1)/TOTAL_NUM_FREQUENCIES;
+                sinusoid_part += 0.5f + collected_wave_coefficients[j * SELECTED_NUM_FREQUENCIES + w_idx] * cos(f * x_theta);
             }
             sinusoid_part /= SELECTED_NUM_FREQUENCIES; // 归一化
             
@@ -128,6 +141,7 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
 
             for (int k = 0; k < c_num; k++)
                 F[k] += feature[k * P + collected_id[j]] * alpha * T;
+
 
             T = next_T;
             last_contributor = contributor;
@@ -164,13 +178,15 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
 
 template <uint32_t CNum>
 __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
-    alphaBlendingBackwardEnhancedCUDAKernel(const int P,
+    alphaBlendingBackwardEnhancedGaborCUDAKernel(const int P,
                                     const float2 *__restrict__ uv,
                                     const float3 *__restrict__ conic,
                                     const float *__restrict__ opacity,
                                     const float *__restrict__ feature,
                                     const int *__restrict__ idx_sorted,
                                     const int2 *__restrict__ tile_range,
+                                    const float *__restrict__ wave_coefficient,
+                                    const int *__restrict__ wave_coefficient_indices,
                                     const float bg,
                                     const int C,
                                     const int W,
@@ -182,7 +198,8 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
                                     float2 *__restrict__ dL_dabs_uv,
                                     float3 *__restrict__ dL_dconic,
                                     float *__restrict__ dL_dopacity,
-                                    float *__restrict__ dL_dfeature) {
+                                    float *__restrict__ dL_dfeature,
+                                    float *__restrict__ dL_dwave_coefficients) {
     auto block = cg::this_thread_block();
     int32_t tile_grid_x = (W + BLOCK_X - 1) / BLOCK_X;
     int32_t tile_id =
@@ -205,6 +222,8 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
     __shared__ float3 collected_conic[BLOCK_SIZE];
     __shared__ float collected_opacity[BLOCK_SIZE];
     __shared__ float collected_feature[CNum * BLOCK_SIZE];
+    __shared__ float collected_wave_coefficients[BLOCK_SIZE * SELECTED_NUM_FREQUENCIES];
+    __shared__ int collected_wave_coefficient_indices[BLOCK_SIZE * SELECTED_NUM_FREQUENCIES];
 
     const float T_final = inside ? final_T[pix_id] : 0;
     float T = T_final;
@@ -232,6 +251,10 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
             for (int ch = 0; ch < c_num; ch++)
                 collected_feature[ch * BLOCK_SIZE + block.thread_rank()] =
                     feature[ch * P + coll_id];
+            for(int w_idx = 0; w_idx < SELECTED_NUM_FREQUENCIES; w_idx++) {
+                collected_wave_coefficients[block.thread_rank() * SELECTED_NUM_FREQUENCIES + w_idx] = wave_coefficient[coll_id * SELECTED_NUM_FREQUENCIES + w_idx];
+                collected_wave_coefficient_indices[block.thread_rank() * SELECTED_NUM_FREQUENCIES + w_idx] = wave_coefficient_indices[coll_id * SELECTED_NUM_FREQUENCIES + w_idx];
+            }
         }
         block.sync();
 
@@ -245,7 +268,11 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
 
             // Gabor 核计算
             float2 dx = vec;
-            float theta = 0.5f; // 方向
+            
+            float a = collected_conic[j].x;  // Σ^{-1}_{11}
+            float b = collected_conic[j].y;  // Σ^{-1}_{12} = Σ^{-1}_{21}
+            float c = collected_conic[j].z;  // Σ^{-1}_{22}
+            float theta = 0.5f * atan2f(2.0f * b, a - c);; // 方向
             float cosr = cos(theta);
             float sinr = sin(theta);
             
@@ -267,8 +294,9 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
             // 使用与提供代码相同的Gabor条纹计算
             float sinusoid_part = 0.0f;
             for(int w_idx = 0; w_idx < SELECTED_NUM_FREQUENCIES; w_idx++){
-                float f = max_frequency * (w_idx + 1) / (float)TOTAL_NUM_FREQUENCIES;
-                sinusoid_part += 0.5f + 0.5f * cos(f * x_theta);
+                // float f = max_frequency * (collected_wave_coefficient_indices[j * SELECTED_NUM_FREQUENCIES + w_idx] + 1) / (float)TOTAL_NUM_FREQUENCIES;
+                float f = max_frequency * (w_idx + 1)/TOTAL_NUM_FREQUENCIES;
+                sinusoid_part += 0.5f + collected_wave_coefficients[j * SELECTED_NUM_FREQUENCIES + w_idx] * cos(f * x_theta);
             }
             sinusoid_part /= SELECTED_NUM_FREQUENCIES; // 归一化
             
@@ -310,9 +338,9 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
             // 计算对每个频率分量的导数
             float dL_dx_theta = 0.0f;
             for(int w_idx = 0; w_idx < SELECTED_NUM_FREQUENCIES; w_idx++){
-                float f = max_frequency * (w_idx + 1) / (float)TOTAL_NUM_FREQUENCIES;
-                // 对cos(f*x_theta)求导得到-f*sin(f*x_theta)
-                dL_dx_theta += dL_dsinusoid * 0.5f * (-f) * sin(f * x_theta) / SELECTED_NUM_FREQUENCIES;
+                // float f = max_frequency * (collected_wave_coefficient_indices[j * SELECTED_NUM_FREQUENCIES + w_idx] + 1) / (float)TOTAL_NUM_FREQUENCIES;
+                float f = max_frequency * (w_idx + 1)/TOTAL_NUM_FREQUENCIES;
+                dL_dx_theta += dL_dsinusoid * (-f) * sin(f * x_theta) / SELECTED_NUM_FREQUENCIES;
             }
             
             // 计算旋转坐标对原始坐标的导数
@@ -348,17 +376,26 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
             
             // 对透明度的导数
             atomicAdd(&dL_dopacity[global_id], g_factor * sinusoid_part * dL_dalpha);
+
+            for(int w_idx = 0; w_idx < SELECTED_NUM_FREQUENCIES; w_idx++) {
+                // float f = max_frequency * (collected_wave_coefficient_indices[j * SELECTED_NUM_FREQUENCIES + w_idx] + 1) / (float)TOTAL_NUM_FREQUENCIES;
+                float f = max_frequency * (w_idx + 1)/TOTAL_NUM_FREQUENCIES;
+                float dL_dcoefficient = dL_dsinusoid * cos(f * x_theta) / SELECTED_NUM_FREQUENCIES;
+                atomicAdd(&dL_dwave_coefficients[global_id * SELECTED_NUM_FREQUENCIES + w_idx], dL_dcoefficient);
+            }
         }
     }
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
-alphaBlendingForwardEnhanced(const torch::Tensor &uv,
+alphaBlendingForwardEnhancedGabor(const torch::Tensor &uv,
                      const torch::Tensor &conic,
                      const torch::Tensor &opacity,
                      const torch::Tensor &feature,
                      const torch::Tensor &idx_sorted,
                      const torch::Tensor &tile_range,
+                     const torch::Tensor &wave_coefficient,
+                     const torch::Tensor &wave_coefficient_indices,
                      const float bg,
                      const int W,
                      const int H,
@@ -370,6 +407,8 @@ alphaBlendingForwardEnhanced(const torch::Tensor &uv,
     CHECK_INPUT(feature);
     CHECK_INPUT(idx_sorted);
     CHECK_INPUT(tile_range);
+    CHECK_INPUT(wave_coefficient);
+    CHECK_INPUT(wave_coefficient_indices);
 
     const int P = feature.size(0);
     const int C = feature.size(1);
@@ -396,7 +435,7 @@ alphaBlendingForwardEnhanced(const torch::Tensor &uv,
         size_t img_data_offset = C0 * H * W;
 
         if (C - C0 <= 3) {
-            alphaBlendingForwardEnhancedCUDAKernel<3><<<tile_grid, block>>>(
+            alphaBlendingForwardEnhancedGaborCUDAKernel<3><<<tile_grid, block>>>(
                 P,
                 (float2 *)uv.contiguous().data_ptr<float>(),
                 (float3 *)conic.contiguous().data_ptr<float>(),
@@ -404,6 +443,8 @@ alphaBlendingForwardEnhanced(const torch::Tensor &uv,
                 feature_permute.contiguous().data_ptr<float>() + p_data_offset,
                 idx_sorted.contiguous().data_ptr<int>(),
                 (int2 *)tile_range.contiguous().data_ptr<int>(),
+                wave_coefficient.contiguous().data_ptr<float>(),
+                wave_coefficient_indices.contiguous().data_ptr<int>(),
                 bg,
                 C - C0,
                 W,
@@ -416,7 +457,7 @@ alphaBlendingForwardEnhanced(const torch::Tensor &uv,
                 rendered_feature.data_ptr<float>() + img_data_offset);
             C0 += 3;
         } else if (C - C0 <= 6) {
-            alphaBlendingForwardEnhancedCUDAKernel<6><<<tile_grid, block>>>(
+            alphaBlendingForwardEnhancedGaborCUDAKernel<6><<<tile_grid, block>>>(
                 P,
                 (float2 *)uv.contiguous().data_ptr<float>(),
                 (float3 *)conic.contiguous().data_ptr<float>(),
@@ -424,6 +465,8 @@ alphaBlendingForwardEnhanced(const torch::Tensor &uv,
                 feature_permute.contiguous().data_ptr<float>() + p_data_offset,
                 idx_sorted.contiguous().data_ptr<int>(),
                 (int2 *)tile_range.contiguous().data_ptr<int>(),
+                wave_coefficient.contiguous().data_ptr<float>(),
+                wave_coefficient_indices.contiguous().data_ptr<int>(),
                 bg,
                 C - C0,
                 W,
@@ -436,7 +479,7 @@ alphaBlendingForwardEnhanced(const torch::Tensor &uv,
                 rendered_feature.data_ptr<float>() + img_data_offset);
             C0 += 6;
         } else if (C - C0 <= 12) {
-            alphaBlendingForwardEnhancedCUDAKernel<12><<<tile_grid, block>>>(
+            alphaBlendingForwardEnhancedGaborCUDAKernel<12><<<tile_grid, block>>>(
                 P,
                 (float2 *)uv.contiguous().data_ptr<float>(),
                 (float3 *)conic.contiguous().data_ptr<float>(),
@@ -444,6 +487,8 @@ alphaBlendingForwardEnhanced(const torch::Tensor &uv,
                 feature_permute.contiguous().data_ptr<float>() + p_data_offset,
                 idx_sorted.contiguous().data_ptr<int>(),
                 (int2 *)tile_range.contiguous().data_ptr<int>(),
+                wave_coefficient.contiguous().data_ptr<float>(),
+                wave_coefficient_indices.contiguous().data_ptr<int>(),
                 bg,
                 C - C0,
                 W,
@@ -456,7 +501,7 @@ alphaBlendingForwardEnhanced(const torch::Tensor &uv,
                 rendered_feature.data_ptr<float>() + img_data_offset);
             C0 += 12;
         } else if (C - C0 <= 18) {
-            alphaBlendingForwardEnhancedCUDAKernel<18><<<tile_grid, block>>>(
+            alphaBlendingForwardEnhancedGaborCUDAKernel<18><<<tile_grid, block>>>(
                 P,
                 (float2 *)uv.contiguous().data_ptr<float>(),
                 (float3 *)conic.contiguous().data_ptr<float>(),
@@ -464,6 +509,8 @@ alphaBlendingForwardEnhanced(const torch::Tensor &uv,
                 feature_permute.contiguous().data_ptr<float>() + p_data_offset,
                 idx_sorted.contiguous().data_ptr<int>(),
                 (int2 *)tile_range.contiguous().data_ptr<int>(),
+                wave_coefficient.contiguous().data_ptr<float>(),
+                wave_coefficient_indices.contiguous().data_ptr<int>(),
                 bg,
                 C - C0,
                 W,
@@ -476,7 +523,7 @@ alphaBlendingForwardEnhanced(const torch::Tensor &uv,
                 rendered_feature.data_ptr<float>() + img_data_offset);
             C0 += 18;
         } else if (C - C0 <= 24) {
-            alphaBlendingForwardEnhancedCUDAKernel<24><<<tile_grid, block>>>(
+            alphaBlendingForwardEnhancedGaborCUDAKernel<24><<<tile_grid, block>>>(
                 P,
                 (float2 *)uv.contiguous().data_ptr<float>(),
                 (float3 *)conic.contiguous().data_ptr<float>(),
@@ -484,6 +531,8 @@ alphaBlendingForwardEnhanced(const torch::Tensor &uv,
                 feature_permute.contiguous().data_ptr<float>() + p_data_offset,
                 idx_sorted.contiguous().data_ptr<int>(),
                 (int2 *)tile_range.contiguous().data_ptr<int>(),
+                wave_coefficient.contiguous().data_ptr<float>(),
+                wave_coefficient_indices.contiguous().data_ptr<int>(),
                 bg,
                 C - C0,
                 W,
@@ -496,7 +545,7 @@ alphaBlendingForwardEnhanced(const torch::Tensor &uv,
                 rendered_feature.data_ptr<float>() + img_data_offset);
             C0 += 24;
         } else {
-            alphaBlendingForwardEnhancedCUDAKernel<32><<<tile_grid, block>>>(
+            alphaBlendingForwardEnhancedGaborCUDAKernel<32><<<tile_grid, block>>>(
                 P,
                 (float2 *)uv.contiguous().data_ptr<float>(),
                 (float3 *)conic.contiguous().data_ptr<float>(),
@@ -504,6 +553,8 @@ alphaBlendingForwardEnhanced(const torch::Tensor &uv,
                 feature_permute.contiguous().data_ptr<float>() + p_data_offset,
                 idx_sorted.contiguous().data_ptr<int>(),
                 (int2 *)tile_range.contiguous().data_ptr<int>(),
+                wave_coefficient.contiguous().data_ptr<float>(),
+                wave_coefficient_indices.contiguous().data_ptr<int>(),
                 bg,
                 C - C0,
                 W,
@@ -521,13 +572,15 @@ alphaBlendingForwardEnhanced(const torch::Tensor &uv,
     return std::make_tuple(rendered_feature, final_T, ncontrib, final_idx);
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
-alphaBlendingBackwardEnhanced(const torch::Tensor &uv,
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+alphaBlendingBackwardEnhancedGabor(const torch::Tensor &uv,
                       const torch::Tensor &conic,
                       const torch::Tensor &opacity,
                       const torch::Tensor &feature,
                       const torch::Tensor &idx_sorted,
                       const torch::Tensor &tile_range,
+                      const torch::Tensor &wave_coefficient,
+                      const torch::Tensor &wave_coefficient_indices,
                       const float bg,
                       const int W,
                       const int H,
@@ -540,6 +593,8 @@ alphaBlendingBackwardEnhanced(const torch::Tensor &uv,
     CHECK_INPUT(feature);
     CHECK_INPUT(idx_sorted);
     CHECK_INPUT(tile_range);
+    CHECK_INPUT(wave_coefficient);
+    CHECK_INPUT(wave_coefficient_indices);
     CHECK_INPUT(final_T);
     CHECK_INPUT(ncontrib);
     CHECK_INPUT(dL_drendered);
@@ -553,7 +608,7 @@ alphaBlendingBackwardEnhanced(const torch::Tensor &uv,
     torch::Tensor dL_dconic = torch::zeros({P, 3}, float_opts);
     torch::Tensor dL_dopacity = torch::zeros({P, 1}, float_opts);
     torch::Tensor dL_dfeature_permute = torch::zeros({C, P}, float_opts);
-    torch::Tensor dL_dalpha = torch::zeros({H, W}, float_opts);
+    torch::Tensor dL_dwave_coefficients = torch::zeros({P, SELECTED_NUM_FREQUENCIES}, float_opts);
 
     const dim3 tile_grid(
         (W + BLOCK_X - 1) / BLOCK_X, (H + BLOCK_Y - 1) / BLOCK_Y, 1);
@@ -567,7 +622,7 @@ alphaBlendingBackwardEnhanced(const torch::Tensor &uv,
         size_t img_data_offset = C0 * H * W;
 
         if (C - C0 <= 3) {
-            alphaBlendingBackwardEnhancedCUDAKernel<3><<<tile_grid, block>>>(
+            alphaBlendingBackwardEnhancedGaborCUDAKernel<3><<<tile_grid, block>>>(
                 P,
                 (float2 *)uv.contiguous().data_ptr<float>(),
                 (float3 *)conic.contiguous().data_ptr<float>(),
@@ -575,6 +630,8 @@ alphaBlendingBackwardEnhanced(const torch::Tensor &uv,
                 feature_permute.contiguous().data_ptr<float>() + p_data_offset,
                 idx_sorted.contiguous().data_ptr<int>(),
                 (int2 *)tile_range.contiguous().data_ptr<int>(),
+                wave_coefficient.contiguous().data_ptr<float>(),
+                wave_coefficient_indices.contiguous().data_ptr<int>(),
                 bg,
                 C - C0,
                 W,
@@ -586,10 +643,11 @@ alphaBlendingBackwardEnhanced(const torch::Tensor &uv,
                 (float2 *)dL_dabs_uv.data_ptr<float>(),
                 (float3 *)dL_dconic.data_ptr<float>(),
                 dL_dopacity.data_ptr<float>(),
-                dL_dfeature_permute.data_ptr<float>() + p_data_offset);
+                dL_dfeature_permute.data_ptr<float>() + p_data_offset,
+                dL_dwave_coefficients.data_ptr<float>());
             C0 += 3;
         } else if (C - C0 <= 6) {
-            alphaBlendingBackwardEnhancedCUDAKernel<6><<<tile_grid, block>>>(
+            alphaBlendingBackwardEnhancedGaborCUDAKernel<6><<<tile_grid, block>>>(
                 P,
                 (float2 *)uv.contiguous().data_ptr<float>(),
                 (float3 *)conic.contiguous().data_ptr<float>(),
@@ -597,6 +655,8 @@ alphaBlendingBackwardEnhanced(const torch::Tensor &uv,
                 feature_permute.contiguous().data_ptr<float>() + p_data_offset,
                 idx_sorted.contiguous().data_ptr<int>(),
                 (int2 *)tile_range.contiguous().data_ptr<int>(),
+                wave_coefficient.contiguous().data_ptr<float>(),
+                wave_coefficient_indices.contiguous().data_ptr<int>(),
                 bg,
                 C - C0,
                 W,
@@ -608,10 +668,11 @@ alphaBlendingBackwardEnhanced(const torch::Tensor &uv,
                 (float2 *)dL_dabs_uv.data_ptr<float>(),
                 (float3 *)dL_dconic.data_ptr<float>(),
                 dL_dopacity.data_ptr<float>(),
-                dL_dfeature_permute.data_ptr<float>() + p_data_offset);
+                dL_dfeature_permute.data_ptr<float>() + p_data_offset,
+                dL_dwave_coefficients.data_ptr<float>());
             C0 += 6;
         } else if (C - C0 <= 12) {
-            alphaBlendingBackwardEnhancedCUDAKernel<12><<<tile_grid, block>>>(
+            alphaBlendingBackwardEnhancedGaborCUDAKernel<12><<<tile_grid, block>>>(
                 P,
                 (float2 *)uv.contiguous().data_ptr<float>(),
                 (float3 *)conic.contiguous().data_ptr<float>(),
@@ -619,6 +680,8 @@ alphaBlendingBackwardEnhanced(const torch::Tensor &uv,
                 feature_permute.contiguous().data_ptr<float>() + p_data_offset,
                 idx_sorted.contiguous().data_ptr<int>(),
                 (int2 *)tile_range.contiguous().data_ptr<int>(),
+                wave_coefficient.contiguous().data_ptr<float>(),
+                wave_coefficient_indices.contiguous().data_ptr<int>(),
                 bg,
                 C - C0,
                 W,
@@ -630,10 +693,11 @@ alphaBlendingBackwardEnhanced(const torch::Tensor &uv,
                 (float2 *)dL_dabs_uv.data_ptr<float>(),
                 (float3 *)dL_dconic.data_ptr<float>(),
                 dL_dopacity.data_ptr<float>(),
-                dL_dfeature_permute.data_ptr<float>() + p_data_offset);
+                dL_dfeature_permute.data_ptr<float>() + p_data_offset,
+                dL_dwave_coefficients.data_ptr<float>());
             C0 += 12;
         } else if (C - C0 <= 18) {
-            alphaBlendingBackwardEnhancedCUDAKernel<18><<<tile_grid, block>>>(
+            alphaBlendingBackwardEnhancedGaborCUDAKernel<18><<<tile_grid, block>>>(
                 P,
                 (float2 *)uv.contiguous().data_ptr<float>(),
                 (float3 *)conic.contiguous().data_ptr<float>(),
@@ -641,6 +705,8 @@ alphaBlendingBackwardEnhanced(const torch::Tensor &uv,
                 feature_permute.contiguous().data_ptr<float>() + p_data_offset,
                 idx_sorted.contiguous().data_ptr<int>(),
                 (int2 *)tile_range.contiguous().data_ptr<int>(),
+                wave_coefficient.contiguous().data_ptr<float>(),
+                wave_coefficient_indices.contiguous().data_ptr<int>(),
                 bg,
                 C - C0,
                 W,
@@ -652,10 +718,11 @@ alphaBlendingBackwardEnhanced(const torch::Tensor &uv,
                 (float2 *)dL_dabs_uv.data_ptr<float>(),
                 (float3 *)dL_dconic.data_ptr<float>(),
                 dL_dopacity.data_ptr<float>(),
-                dL_dfeature_permute.data_ptr<float>() + p_data_offset);
+                dL_dfeature_permute.data_ptr<float>() + p_data_offset,
+                dL_dwave_coefficients.data_ptr<float>());
             C0 += 18;
         } else if (C - C0 <= 24) {
-            alphaBlendingBackwardEnhancedCUDAKernel<24><<<tile_grid, block>>>(
+            alphaBlendingBackwardEnhancedGaborCUDAKernel<24><<<tile_grid, block>>>(
                 P,
                 (float2 *)uv.contiguous().data_ptr<float>(),
                 (float3 *)conic.contiguous().data_ptr<float>(),
@@ -663,6 +730,8 @@ alphaBlendingBackwardEnhanced(const torch::Tensor &uv,
                 feature_permute.contiguous().data_ptr<float>() + p_data_offset,
                 idx_sorted.contiguous().data_ptr<int>(),
                 (int2 *)tile_range.contiguous().data_ptr<int>(),
+                wave_coefficient.contiguous().data_ptr<float>(),
+                wave_coefficient_indices.contiguous().data_ptr<int>(),
                 bg,
                 C - C0,
                 W,
@@ -674,10 +743,11 @@ alphaBlendingBackwardEnhanced(const torch::Tensor &uv,
                 (float2 *)dL_dabs_uv.data_ptr<float>(),
                 (float3 *)dL_dconic.data_ptr<float>(),
                 dL_dopacity.data_ptr<float>(),
-                dL_dfeature_permute.data_ptr<float>() + p_data_offset);
+                dL_dfeature_permute.data_ptr<float>() + p_data_offset,
+                dL_dwave_coefficients.data_ptr<float>());
             C0 += 24;
         } else {
-            alphaBlendingBackwardEnhancedCUDAKernel<32><<<tile_grid, block>>>(
+            alphaBlendingBackwardEnhancedGaborCUDAKernel<32><<<tile_grid, block>>>(
                 P,
                 (float2 *)uv.contiguous().data_ptr<float>(),
                 (float3 *)conic.contiguous().data_ptr<float>(),
@@ -685,6 +755,8 @@ alphaBlendingBackwardEnhanced(const torch::Tensor &uv,
                 feature_permute.contiguous().data_ptr<float>() + p_data_offset,
                 idx_sorted.contiguous().data_ptr<int>(),
                 (int2 *)tile_range.contiguous().data_ptr<int>(),
+                wave_coefficient.contiguous().data_ptr<float>(),
+                wave_coefficient_indices.contiguous().data_ptr<int>(),
                 bg,
                 C - C0,
                 W,
@@ -696,7 +768,8 @@ alphaBlendingBackwardEnhanced(const torch::Tensor &uv,
                 (float2 *)dL_dabs_uv.data_ptr<float>(),
                 (float3 *)dL_dconic.data_ptr<float>(),
                 dL_dopacity.data_ptr<float>(),
-                dL_dfeature_permute.data_ptr<float>() + p_data_offset);
+                dL_dfeature_permute.data_ptr<float>() + p_data_offset,
+                dL_dwave_coefficients.data_ptr<float>());
             C0 += 32;
         }
     }
@@ -704,5 +777,5 @@ alphaBlendingBackwardEnhanced(const torch::Tensor &uv,
     // [N, C]
     torch::Tensor dL_dfeature = dL_dfeature_permute.transpose(0, 1);
 
-    return std::make_tuple(dL_duv, dL_dconic, dL_dopacity, dL_dfeature, dL_dabs_uv);
+    return std::make_tuple(dL_duv, dL_dconic, dL_dopacity, dL_dfeature, dL_dabs_uv, dL_dwave_coefficients);
 }

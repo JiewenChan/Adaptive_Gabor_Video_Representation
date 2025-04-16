@@ -19,6 +19,7 @@ from model.dynamic_gaussian_with_base_point_cloud import DynamicGaussianWithBase
 from model.dynamic_bspline_gaussian_points import DynamicBsplineGaussianPointCloud
 from model.dynamic_bspline_gaussian_with_base_point_cloud import DynamicBsplineGaussianWithBasePointCloud
 from model.dynamic_bspline_gaussian_all import DynamicBsplineGaussianAll
+from model.dynamic_bspline_gabor_all import DynamicBsplineGaborAll
 # from lbs_gaussian_point import LBSGaussianPointCloud
 # from dust3r_interface import Dust3R
 from itertools import accumulate
@@ -270,9 +271,13 @@ class SingleAtlasBsplineWithBaseModel(BaseModel):
 
     cfg: Config
 
-    def setup(self, gs_atlas_cfg, base_point_seq=None, gaussian_class=DynamicBsplineGaussianAll, device="cuda"):
+    def setup(self, gs_atlas_cfg, base_point_seq=None, gabor=False, device="cuda"):
+        self.gabor = gabor
         self.gs_atlas_cfg = gs_atlas_cfg
-        self.point_cloud = gaussian_class(self.cfg.point_cloud, gs_atlas_cfg, base_point_seq).to(device)
+        if self.gabor:
+            self.point_cloud = DynamicBsplineGaborAll(self.cfg.point_cloud, gs_atlas_cfg, base_point_seq).to(device)
+        else:
+            self.point_cloud = DynamicBsplineGaussianAll(self.cfg.point_cloud, gs_atlas_cfg, base_point_seq).to(device)
         self.render_attributes_list = list(gs_atlas_cfg.render_attributes.keys())
 
     def forward(self, ids, batch=None) -> dict:
@@ -307,6 +312,12 @@ class SingleAtlasBsplineWithBaseModel(BaseModel):
             "pos_cubic_node": pos_cubic_node,
             "rot_cubic_node": rot_cubic_node,
         }
+        if self.gabor:
+            wave_coefficients, wave_coefficient_indices = self.point_cloud.get_topk_waves()
+            render_dict["wave_coefficients"] = wave_coefficients
+            render_dict["wave_coefficient_indices"] = wave_coefficient_indices
+            # breakpoint()
+        
         for attr in self.render_attributes_list:
             if attr not in render_dict:
                 render_dict[attr] = getattr(self.point_cloud, f"get_{attr}")

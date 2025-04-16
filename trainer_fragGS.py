@@ -115,6 +115,7 @@ class FragTrainer:
         writer: dict = field(default_factory=dict)
         hooks: dict = field(default_factory=dict)
         render_attributes: dict = field(default_factory=dict)
+        point_cloud_name: str = "gs_bspline_all"
         # Dataset
         dataset_name: str = "NeRFDataset"
         dataset: dict = field(default_factory=dict)
@@ -204,10 +205,24 @@ class FragTrainer:
             reverse_mask=True,
             is_fg=False
         )
+        
+        gs_atlas_cfg_bspline_all = GSAtlasCFG(
+            name=self.cfg.point_cloud_name,
+            num_images=self.num_imgs,
+            start_frame_path='test_data/bear/color/00000.jpg',
+            end_frame_path=None,
+            start_frame_mask_path='test_data/bear/masks/00000.png',
+            start_depth_npy='test_data/bear/marigold/depth_npy/00000_pred.npy',
+            end_frame_mask_path=None,
+            start_frame_id=0,
+            end_frame_id=50,
+            render_attributes=self.cfg.render_attributes
+        )
 
         # self.gs_atlas_cfg_list = [gs_atlas_cfg1, gs_atlas_cfg2, gs_atlas_cfg3]
         # self.gs_atlas_cfg_list = [gs_atlas_cfg2, gs_atlas_cfg3]
-        self.gs_atlas_cfg_list = [gs_atlas_cfg1]
+        # self.gs_atlas_cfg_list = [gs_atlas_cfg1]
+        self.gs_atlas_cfg_list = [gs_atlas_cfg_bspline_all]
         base_point_seq_list = [self.tracks_fg_info['tracks_3d'].permute(1,0,2).to(self.device),
                                self.tracks_bg_info['tracks_3d'].permute(1,0,2).to(self.device)]
         # TODO define GSTrainer with __init__(self, cfg, *gs_atlas_cfg_list)

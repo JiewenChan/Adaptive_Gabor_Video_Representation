@@ -4,19 +4,22 @@ from jaxtyping import Float
 import dptr.gabor._C as _C
 
 
-def alpha_blending_with_bias(
+def render_gabor(
     uv: Float[Tensor, "P 2"],
     conic: Float[Tensor, "P 2"],
     opacity: Float[Tensor, "P 1"],
     feature: Float[Tensor, "P C"],
-    opacity_bias: Float[Tensor, "P 3"],
     idx_sorted: Float[Tensor, "Nid"],
     title_bins: Float[Tensor, "Ntile 2"],
+    wave_coefficient: Float[Tensor, "Nid"],
+    wave_coefficient_indices: Float[Tensor, "Nid"],
     bg: float,
     W: int,
     H: int,
     ndc: Float[Tensor, "P 2"]=None,
-    abs_ndc: Float[Tensor, "P 2"]=None
+    abs_ndc: Float[Tensor, "P 2"]=None,
+    K: int=10,
+    enable_truncation: bool=False
 ) -> Float[Tensor, "C H W"]:
     """
     Alpha Blending for sorted 2D planar Gaussian in a tile based manner.
@@ -31,8 +34,6 @@ def alpha_blending_with_bias(
         Opacity values for each point.
     feature : Float[Tensor, "P C"]
         Features for each point to be alpha blended.
-    opacity_bias : Float[Tensor, "P 3"]
-        RGB bias values for each point.
     idx_sorted : Float[Tensor, "Nid"]
         Indices of Gaussian points sorted according to [tile_id|depth].
     title_bins : Float[Tensor, "Ntile 2"]
@@ -47,23 +48,30 @@ def alpha_blending_with_bias(
         Just for storing the gradients of NDC coordinates for adaptive density control, by default None
     abs_ndc: Float[Tensor, "P 2"]
         Just for storing the ABSOLUTE gradients of NDC coordinates for adaptive density control, by default None
+    K: int
+        Number of Gaussians to be considered for each pixel, by default 10
 
     Returns
     -------
     feature_map : Float[Tensor, "C H W"]
         Rendered feature maps.
+    ncontrib: Float[Tensor, "H W"]
+        Number of contributing Gaussians for each pixel
+    gs_idx: Float[Tensor, "H W K"]
+        First K gaussian index of each pixel
+    
     """
 
-    return _AlphaBlending.apply(
-        uv, conic, opacity, feature, opacity_bias, idx_sorted, title_bins, bg, W, H, ndc, abs_ndc
+    return _RenderGabor.apply(
+        uv, conic, opacity, feature, idx_sorted, title_bins, wave_coefficient, wave_coefficient_indices, bg, W, H, ndc, abs_ndc, K, enable_truncation
     )
 
 
-class _AlphaBlending(torch.autograd.Function):
+class _RenderGabor(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, uv, conic, opacity, feature, opacity_bias, idx_sorted, tile_range, bg, W, H, ndc, abs_ndc):
-        (render_feature, final_T, ncontrib) = _C.alpha_blending_forward_with_bias(
-            uv, conic, opacity, feature, opacity_bias, idx_sorted, tile_range, bg, W, H
+    def forward(ctx, uv, conic, opacity, feature, idx_sorted, tile_range, wave_coefficient, wave_coefficient_indices, bg, W, H, ndc, abs_ndc, K, enable_truncation):
+        (render_feature, final_T, ncontrib, gs_idx) = _C.render_gabor_forward(
+            uv, conic, opacity, feature, idx_sorted, tile_range, wave_coefficient, wave_coefficient_indices, bg, W, H, K, enable_truncation
         )
 
         ctx.W = W
@@ -73,13 +81,13 @@ class _AlphaBlending(torch.autograd.Function):
         ctx.abs_ndc = abs_ndc
         
         ctx.save_for_backward(
-            uv, conic, opacity, feature, opacity_bias, idx_sorted, tile_range, final_T, ncontrib
+            uv, conic, opacity, feature, idx_sorted, tile_range, wave_coefficient, wave_coefficient_indices, final_T, ncontrib
         )
 
-        return render_feature
+        return render_feature, ncontrib, gs_idx
 
     @staticmethod
-    def backward(ctx, dL_drendered):
+    def backward(ctx, dL_drendered, _, __):
         W = ctx.W
         H = ctx.H
         bg = ctx.bg
@@ -91,21 +99,23 @@ class _AlphaBlending(torch.autograd.Function):
             conic,
             opacity,
             feature,
-            opacity_bias,
             idx_sorted,
             tile_range,
+            wave_coefficient,
+            wave_coefficient_indices,
             final_T,
             ncontrib,
         ) = ctx.saved_tensors
 
-        (dL_duv, dL_dconic, dL_dopacity, dL_dfeature, dL_dopacity_bias, dL_dabs_uv) = _C.alpha_blending_backward_with_bias(
+        (dL_duv, dL_dconic, dL_dopacity, dL_dfeature, dL_dabs_uv, dL_dwave_coefficients) = _C.render_gabor_backward(
             uv,
             conic,
             opacity,
             feature,
-            opacity_bias,
             idx_sorted,
             tile_range,
+            wave_coefficient,
+            wave_coefficient_indices,
             bg,
             W,
             H,
@@ -133,11 +143,13 @@ class _AlphaBlending(torch.autograd.Function):
             dL_dopacity,
             # grads w.r. feature,
             dL_dfeature,
-            # grads w.r. opacity_bias,
-            dL_dopacity_bias,
             # grads w.r. idx_sorted,
             None,
             # grads w.r. tile_range,
+            None,
+            # grads w.r. wave_coefficients,
+            dL_dwave_coefficients,
+            # grads w.r. wave_coefficient_indices,
             None,
             # grads w.r. bg,
             None,
@@ -148,7 +160,11 @@ class _AlphaBlending(torch.autograd.Function):
             # grads w.r. ndc
             dL_dndc,
             # abs grads w.r. ndc
-            dL_dabs_ndc
+            dL_dabs_ndc,
+            # grads w.r. K
+            None,
+            # grads w.r. enable_truncation
+            None,
         )
 
         return grads

@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import dptr.gabor as gabor
+import dptr.gs as gs
 from torch import Tensor
 from typing import Tuple
 from jaxtyping import Float, Int
@@ -133,6 +134,7 @@ class DPTROrthoEnhancedRenderGabor(BaseObject):
         update_sh_iter: int = 1000
         max_sh_degree: int = 3
         densify_abs_grad_enable: bool = False
+        gabor_enable: bool = True
     
     cfg: Config
 
@@ -141,6 +143,7 @@ class DPTROrthoEnhancedRenderGabor(BaseObject):
         self.device = device
         super().setup(white_bg, device, **kwargs)
         self.bg_color = 1. if white_bg else 0.
+        self.gabor_enable = self.cfg.gabor_enable
 
     def project_point(
         self, 
@@ -215,6 +218,8 @@ class DPTROrthoEnhancedRenderGabor(BaseObject):
                     scaling,
                     rotation,
                     shs,
+                    wave_coefficients=None,
+                    wave_coefficient_indices=None,
                     scaling_modifier=1.0,
                     render_xyz=False,
                     **kwargs) -> dict:
@@ -269,7 +274,10 @@ class DPTROrthoEnhancedRenderGabor(BaseObject):
         # direction = direction / direction.norm(dim=1, keepdim=True)
         direction = torch.zeros_like(position).cuda()
         direction[:, 2] = 1.0
-        rgb = gabor.compute_sh(shs, 3, direction)
+        if self.gabor_enable:  
+            rgb = gabor.compute_sh(shs, 3, direction)
+        else:
+            rgb = gs.compute_sh(shs, 3, direction)
 
         # (uv, depth) = gabor.project_point(
         #     position,
@@ -286,16 +294,26 @@ class DPTROrthoEnhancedRenderGabor(BaseObject):
                 height,
                 nearest=0.01)
         else:
-            (uv, depth) = gabor.project_point(
-                position,
-                intrinsic_matrix.cuda(),
-                extrinsic_matrix.cuda(),
-                width, height)
+            if self.gabor_enable:
+                (uv, depth) = gabor.project_point(
+                    position,
+                    intrinsic_matrix.cuda(),
+                    extrinsic_matrix.cuda(),
+                    width, height)
+            else:
+                (uv, depth) = gabor.project_point(
+                    position,
+                    intrinsic_matrix.cuda(),
+                    extrinsic_matrix.cuda(),
+                    width, height)
 
         visible = depth != 0
 
         # compute cov3d
-        cov3d = gabor.compute_cov3d(scaling, rotation, visible)
+        if self.gabor_enable:
+            cov3d = gabor.compute_cov3d(scaling, rotation, visible)
+        else:
+            cov3d = gs.compute_cov3d(scaling, rotation, visible)
 
         # ewa project
         if enable_ortho_projection:
@@ -309,21 +327,38 @@ class DPTROrthoEnhancedRenderGabor(BaseObject):
                 visible.squeeze(-1)
             )
         else:
-            (conic, radius, tiles_touched) = gabor.ewa_project(
-                position,
-                cov3d,
-                intrinsic_matrix.cuda(),
-                extrinsic_matrix.cuda(),
-                uv,
-                width,
-                height,
-                visible
-            )
+            if self.gabor_enable:
+                (conic, radius, tiles_touched) = gabor.ewa_project(
+                    position,
+                    cov3d,
+                    intrinsic_matrix.cuda(),
+                    extrinsic_matrix.cuda(),
+                    uv,
+                    width,
+                    height,
+                    visible
+                )
+            else:
+                (conic, radius, tiles_touched) = gs.ewa_project(
+                    position,
+                    cov3d,
+                    intrinsic_matrix.cuda(),
+                    extrinsic_matrix.cuda(),
+                    uv,
+                    width,
+                    height,
+                    visible
+                )
 
         # sort
-        (gaussian_ids_sorted, tile_range) = gabor.sort_gaussian(
-            uv, depth, width, height, radius, tiles_touched
-        )
+        if self.gabor_enable:
+            (gaussian_ids_sorted, tile_range) = gabor.sort_gaussian(
+                uv, depth, width, height, radius, tiles_touched
+            )
+        else:
+            (gaussian_ids_sorted, tile_range) = gs.sort_gaussian(
+                uv, depth, width, height, radius, tiles_touched
+            )
 
         Render_Features = RenderFeatures(rgb=rgb)
         render_features = Render_Features.combine()
@@ -339,32 +374,60 @@ class DPTROrthoEnhancedRenderGabor(BaseObject):
 
         bg_color = kwargs.get("bg_color", self.bg_color)
         num_idx = kwargs.get("num_idx", 10)
-        rendered_features, ncontrib, gs_idx = gabor.alpha_blending_enhanced(
-            uv, conic, opacity, render_features,
-            gaussian_ids_sorted, tile_range, bg_color, 
-            width, height, 
-            ndc,
-            abs_ndc,
-            K=num_idx
-        )
+        # wave_coefficients_flattened = wave_coefficients.flatten()
+        # wave_coefficient_indices_flattened = wave_coefficient_indices.flatten().cuda()
+        if self.gabor_enable:
+            rendered_features, ncontrib, gs_idx = gabor.alpha_blending_enhanced_gabor(
+                uv, conic, opacity, render_features,
+                gaussian_ids_sorted, tile_range, 
+                wave_coefficients, wave_coefficient_indices, bg_color, 
+                width, height, 
+                ndc,
+                abs_ndc,
+                K=num_idx
+            )
+        else:
+            rendered_features, ncontrib, gs_idx = gs.alpha_blending_enhanced(
+                uv, conic, opacity, render_features,
+                gaussian_ids_sorted, tile_range, 
+                bg_color, width, height, 
+                ndc, abs_ndc, K=num_idx
+            )
+        
         rendered_features_split = Render_Features.split(rendered_features)
 
-        rendered_features_ellipse, _, _ = gabor.render_gaussian_ellipse(
-            uv, conic, opacity, render_features,
-            gaussian_ids_sorted, tile_range, bg_color, 
-            width, height, 
-            ndc,
-            abs_ndc,
-            K=num_idx
-        )
+        if self.gabor_enable:
+            rendered_features_ellipse, _, _ = gabor.render_gabor(
+                uv, conic, opacity, render_features,
+                gaussian_ids_sorted, tile_range, 
+                wave_coefficients, wave_coefficient_indices, bg_color, 
+                width, height, 
+                ndc,
+                abs_ndc,
+                K=num_idx
+            )
+        else:
+            rendered_features_ellipse, _, _ = gs.render_gaussian_ellipse(
+                uv, conic, opacity, render_features,
+                gaussian_ids_sorted, tile_range, 
+                bg_color, width, height, 
+                ndc, abs_ndc, K=num_idx
+            )  
         rendered_features_split.update({"ellipse": rendered_features_ellipse})
         
         ##### render for depth
         bg_color = 1.0
-        rendered_features_depth = gabor.alpha_blending(
-            uv, conic, opacity, depth,
-            gaussian_ids_sorted, tile_range, bg_color, width, height, ndc.detach()
-        )
+        if self.gabor_enable:   
+            rendered_features_depth = gabor.alpha_blending_gabor(
+                uv, conic, opacity, depth,
+                gaussian_ids_sorted, tile_range, wave_coefficients, wave_coefficient_indices, 
+                bg_color, width, height, ndc.detach()
+            )
+        else:
+            rendered_features_depth = gs.alpha_blending(
+                uv, conic, opacity, depth,
+                gaussian_ids_sorted, tile_range, bg_color, width, height, ndc.detach()
+            )
         rendered_features_split.update({"depth": rendered_features_depth})
 
 
@@ -379,10 +442,17 @@ class DPTROrthoEnhancedRenderGabor(BaseObject):
             render_features_extend = Render_Features_extend.combine()
 
             bg_color = 0.0
-            rendered_features_extent = gabor.alpha_blending(
-                uv, conic, opacity.detach(), render_features_extend,
-                gaussian_ids_sorted, tile_range, bg_color, width, height, ndc.detach()
-            )
+            if self.gabor_enable:
+                rendered_features_extent = gabor.alpha_blending_gabor(
+                    uv, conic, opacity.detach(), render_features_extend,
+                    gaussian_ids_sorted, tile_range, wave_coefficients, wave_coefficient_indices,
+                    bg_color, width, height, ndc.detach()
+                )
+            else:
+                rendered_features_extent = gs.alpha_blending(
+                    uv, conic, opacity.detach(), render_features_extend,
+                    gaussian_ids_sorted, tile_range, bg_color, width, height, ndc.detach()
+                )
             rendered_features_split.update(Render_Features_extend.split(rendered_features_extent))
 
         return {"rendered_features_split": rendered_features_split,
@@ -415,7 +485,7 @@ class DPTROrthoEnhancedRenderGabor(BaseObject):
         visibilitys = []
         radii = []
         gs_idx = []
-
+        
         for b_i in batch:
             b_i.update(render_dict)
             render_results = self.render_iter(**b_i)

@@ -4,6 +4,7 @@ trainer:
   output_path: "gs_debug"
   max_steps: 5000
   val_interval: 1000
+  point_cloud_name: "gs_bspline_all"
 
   model:
     name: FragModel
@@ -90,9 +91,10 @@ trainer:
   renderer:
     # name: "DPTRRender"
     # name: "DPTROrthoRender"
-    name: "DPTROrthoEnhancedRender"
+    name: "DPTROrthoEnhancedRenderGabor"
     max_sh_degree: ${trainer.model.point_cloud.max_sh_degree}
     densify_abs_grad_enable: False
+    gabor_enable: False
   writer:
     writer_type: "TensorboardWriter"
   

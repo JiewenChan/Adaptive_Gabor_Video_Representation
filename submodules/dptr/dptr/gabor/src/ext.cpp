@@ -3,14 +3,14 @@
  * @brief
  */
 
-#include <alpha_blending.h>
-#include <alpha_blending_enhanced.h>
+#include <alpha_blending_gabor.h>
+#include <alpha_blending_enhanced_gabor.h>
 #include <compute_cov3d.h>
 #include <compute_sh.h>
 #include <ewa_project.h>
 #include <project_point.h>
 #include <sort_gaussian.h>
-#include <render_gaussian_ellipse.h>
+#include <render_gabor.h>
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("project_point_forward", &projectPointsForward);
@@ -23,14 +23,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("compute_tile_gaussian_range", &computeTileGaussianRange);
     m.def("compute_sh_forward", &computeSHForward);
     m.def("compute_sh_backward", &computeSHBackward);
-    m.def("alpha_blending_forward", &alphaBlendingForward);
-    m.def("alpha_blending_backward", &alphaBlendingBackward);
-    m.def("alpha_blending_forward_enhanced", &alphaBlendingForwardEnhanced);
-    m.def("alpha_blending_backward_enhanced", &alphaBlendingBackwardEnhanced);
+    m.def("alpha_blending_gabor_forward", &alphaBlendingGaborForward);
+    m.def("alpha_blending_gabor_backward", &alphaBlendingGaborBackward);
+    m.def("alpha_blending_forward_enhanced_gabor", &alphaBlendingForwardEnhancedGabor);
+    m.def("alpha_blending_backward_enhanced_gabor", &alphaBlendingBackwardEnhancedGabor);
     m.def("compute_sh_free_forward", &computeSHFreeForward);
     m.def("compute_sh_free_backward", &computeSHFreeBackward);
-    m.def("alpha_blending_forward_with_bias", &alphaBlendingForwardWithBias);
-    m.def("alpha_blending_backward_with_bias", &alphaBlendingBackwardWithBias);
-    m.def("render_gaussian_ellipse_forward", &renderGaussianEllipseForward);
-    m.def("render_gaussian_ellipse_backward", &renderGaussianEllipseBackward);
+    m.def("render_gabor_forward", &renderGaborForward);
+    m.def("render_gabor_backward", &renderGaborBackward);
 }

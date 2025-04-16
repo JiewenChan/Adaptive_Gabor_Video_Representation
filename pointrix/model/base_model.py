@@ -177,6 +177,7 @@ class BaseModel(BaseModule):
     
     def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True, assign: bool = False):
         num_pts = state_dict.pop('num_pts')
+        print(f"num_pts: {num_pts}")
 
         if num_pts != len(self.point_cloud):
             self.point_cloud.re_init(num_pts)

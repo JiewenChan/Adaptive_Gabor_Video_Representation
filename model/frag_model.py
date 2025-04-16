@@ -61,6 +61,8 @@ class FragModel(BaseModel):
                 self.atlas_dict[name] = SingleAtlasLBSModel(self.cfg, gs_atlas_cfg, base_point_seq_list[1])
             elif name == "gs_bspline_all":
                 self.atlas_dict[name] = SingleAtlasBsplineWithBaseModel(self.cfg, gs_atlas_cfg, base_point_seq)
+            elif name == "gs_bspline_all_gabor":
+                self.atlas_dict[name] = SingleAtlasBsplineWithBaseModel(self.cfg, gs_atlas_cfg, base_point_seq, gabor=True)
             else:
                 raise ValueError(f"Unknown atlas name: {name}")
         self.focal_y_ratio = 1.0

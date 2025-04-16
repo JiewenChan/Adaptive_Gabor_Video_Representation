@@ -102,8 +102,11 @@ def quat_normalize(q):
     return q / torch.norm(q, dim=-1, keepdim=True)
 
 
+num_total_frequencies = 10
+num_frequencies = 2
+
 @POINTSCLOUD_REGISTRY.register()
-class DynamicBsplineGaussianAll(PointCloud):
+class DynamicBsplineGaborAll(PointCloud):
     """
     A class for Gaussian point cloud.
 
@@ -180,6 +183,7 @@ class DynamicBsplineGaussianAll(PointCloud):
         self.opacity_activation = torch.sigmoid
         self.inverse_opacity_activation = inverse_sigmoid
         self.rotation_activation = torch.nn.functional.normalize
+        self.wave_coefficient_activation = torch.sigmoid  # 添加 wave_coefficients 的激活函數
 
         scales, rots, opacities, features_rest = gaussian_point_init(
             position=self.position,
@@ -208,6 +212,9 @@ class DynamicBsplineGaussianAll(PointCloud):
         rot_cubic_coeff[..., 0] = 1.0  # 設置 w 分量為 1 /
         self.register_atribute("scale_cubic_node", scale_cubic_coeff)
         self.register_atribute("rot_cubic_node", rot_cubic_coeff.reshape(-1, self.interval_num*3))
+
+        wave_coefficients = torch.zeros((num_points, num_total_frequencies)).to(self.base_position.device).float()
+        self.register_atribute("wave_coefficients", wave_coefficients)
 
         ######### add image attributes to GS
         for attrib_name, feature_dim in gs_atlas_cfg.render_attributes.items():
@@ -337,6 +344,18 @@ class DynamicBsplineGaussianAll(PointCloud):
     @property
     def get_dino_attribute(self):
         return self.dino_attribute_activation(self.dino_attribute)
+    
+    @property
+    def get_wave_coefficients(self):
+        return self.wave_coefficient_activation(self.wave_coefficients)
+    
+    def get_topk_waves(self):
+        coefficients_to_send, indices_to_send = torch.topk(torch.abs(self.get_wave_coefficients),
+                                num_frequencies, dim=1, sorted=False)
+        coefficients_to_send = coefficients_to_send * torch.gather(self.get_wave_coefficients.sign(), dim=1, index=indices_to_send)
+        indices_to_send = indices_to_send.type(torch.int)
+        
+        return coefficients_to_send, indices_to_send
 
 
     def re_init(self, num_points):
@@ -366,6 +385,9 @@ class DynamicBsplineGaussianAll(PointCloud):
         self.register_atribute("rot_cubic_node", rot_cubic_coeff.reshape(-1, self.interval_num*3))
         scale_cubic_coeff = torch.zeros((num_points, self.interval_num*3))
         self.register_atribute("scale_cubic_node", scale_cubic_coeff)
+        
+        wave_coefficients = torch.zeros((num_points, num_total_frequencies)).to(self.base_position.device).float()
+        self.register_atribute("wave_coefficients", wave_coefficients)
 
         ######### add image attributes to GS
         for attrib_name, feature_dim in self.gs_atlas_cfg.render_attributes.items():

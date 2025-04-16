@@ -6,10 +6,9 @@ from .ewa_project import ewa_project
 from .compute_sh import compute_sh
 from .compute_sh_free import compute_sh_free
 from .sort_gaussian import sort_gaussian
-from .alpha_blending import alpha_blending
-from .alpha_blending_enhanced import alpha_blending_enhanced
-from .alpha_blending_with_bias import alpha_blending_with_bias
-from .render_gaussian_ellipse import render_gaussian_ellipse
+from .render_gabor import render_gabor
+from .alpha_blending_enhanced_gabor import alpha_blending_enhanced_gabor
+from .alpha_blending_gabor import alpha_blending_gabor
 
 __all__ = [
     "project_point",
@@ -18,11 +17,10 @@ __all__ = [
     "sort_gaussian",
     "compute_sh",
     "compute_sh_free"
-    "alpha_blending",
+    "alpha_blending_gabor",
     "rasterization",
-    "alpha_blending_enhanced",
-    "alpha_blending_with_bias",
-    "ender_gaussian_ellipse"
+    "render_gabor",
+    "alpha_blending_enhanced_gabor"
 ]
 
 
