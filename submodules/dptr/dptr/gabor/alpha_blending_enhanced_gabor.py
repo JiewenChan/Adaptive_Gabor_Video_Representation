@@ -19,7 +19,9 @@ def alpha_blending_enhanced_gabor(
     ndc: Float[Tensor, "P 2"]=None,
     abs_ndc: Float[Tensor, "P 2"]=None,
     K: int=10,
-    enable_truncation: bool=False
+    enable_truncation: bool=False,
+    use_adaptive_gamma_bias: bool=True,
+    sinusoid_gamma: float=0.5,
 ) -> Float[Tensor, "C H W"]:
     """
     Alpha Blending for sorted 2D planar Gaussian in a tile based manner.
@@ -54,6 +56,10 @@ def alpha_blending_enhanced_gabor(
         Just for storing the ABSOLUTE gradients of NDC coordinates for adaptive density control, by default None
     K: int
         Number of Gaussians to be considered for each pixel, by default 10
+    use_adaptive_gamma_bias: bool
+        Whether to add the gamma-based bias (default True) to stabilize sinusoid modulation.
+    sinusoid_gamma: float
+        Gamma used inside the adaptive bias when enabled.
 
     Returns
     -------
@@ -67,15 +73,31 @@ def alpha_blending_enhanced_gabor(
     """
 
     return _AlphaBlendingGabor.apply(
-        uv, conic, opacity, feature, idx_sorted, title_bins, wave_coefficients, wave_coefficient_indices, bg, W, H, ndc, abs_ndc, K, enable_truncation
+        uv,
+        conic,
+        opacity,
+        feature,
+        idx_sorted,
+        title_bins,
+        wave_coefficients,
+        wave_coefficient_indices,
+        bg,
+        W,
+        H,
+        ndc,
+        abs_ndc,
+        K,
+        enable_truncation,
+        use_adaptive_gamma_bias,
+        sinusoid_gamma,
     )
 
 
 class _AlphaBlendingGabor(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, uv, conic, opacity, feature, idx_sorted, tile_range, wave_coefficients, wave_coefficient_indices, bg, W, H, ndc, abs_ndc, K, enable_truncation):
+    def forward(ctx, uv, conic, opacity, feature, idx_sorted, tile_range, wave_coefficients, wave_coefficient_indices, bg, W, H, ndc, abs_ndc, K, enable_truncation, use_adaptive_gamma_bias, sinusoid_gamma):
         (render_feature, final_T, ncontrib, gs_idx) = _C.alpha_blending_forward_enhanced_gabor(
-            uv, conic, opacity, feature, idx_sorted, tile_range, wave_coefficients, wave_coefficient_indices, bg, W, H, K, enable_truncation
+            uv, conic, opacity, feature, idx_sorted, tile_range, wave_coefficients, wave_coefficient_indices, bg, W, H, K, enable_truncation, use_adaptive_gamma_bias, sinusoid_gamma
         )
 
         ctx.W = W
@@ -83,6 +105,8 @@ class _AlphaBlendingGabor(torch.autograd.Function):
         ctx.bg = bg
         ctx.ndc = ndc
         ctx.abs_ndc = abs_ndc
+        ctx.use_adaptive_gamma_bias = use_adaptive_gamma_bias
+        ctx.sinusoid_gamma = sinusoid_gamma
         
         ctx.save_for_backward(
             uv, conic, opacity, feature, idx_sorted, tile_range, wave_coefficients, wave_coefficient_indices, final_T, ncontrib
@@ -97,6 +121,8 @@ class _AlphaBlendingGabor(torch.autograd.Function):
         bg = ctx.bg
         ndc = ctx.ndc
         abs_ndc = ctx.abs_ndc
+        use_adaptive_gamma_bias = ctx.use_adaptive_gamma_bias
+        sinusoid_gamma = ctx.sinusoid_gamma
 
         (
             uv,
@@ -126,6 +152,8 @@ class _AlphaBlendingGabor(torch.autograd.Function):
             final_T,
             ncontrib,
             dL_drendered,
+            use_adaptive_gamma_bias,
+            sinusoid_gamma,
         )
         
         dL_dndc = None
@@ -168,6 +196,10 @@ class _AlphaBlendingGabor(torch.autograd.Function):
             # grads w.r. K
             None,
             # grads w.r. enable_truncation
+            None,
+            # grads w.r. use_adaptive_gamma_bias
+            None,
+            # grads w.r. sinusoid_gamma
             None,
         )
 

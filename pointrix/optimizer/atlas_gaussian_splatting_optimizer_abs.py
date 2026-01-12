@@ -1,8 +1,9 @@
+# AbsGS optimizer variant implementing homodirectional gradient accumulation.
 import torch
 from torch import Tensor
 from torch.optim import Optimizer
 from dataclasses import dataclass
-from typing import Tuple, List, Optional, Dict
+from typing import Tuple, List
 
 from pointrix.utils.config import C
 
@@ -18,7 +19,7 @@ from .optimizer import OPTIMIZER_REGISTRY
 
 
 @OPTIMIZER_REGISTRY.register()
-class AtlasGaussianSplattingOptimizer(BaseOptimizer):
+class AbsGSOptimizer(BaseOptimizer):
     @dataclass
     class Config:
         # Densification
@@ -32,7 +33,6 @@ class AtlasGaussianSplattingOptimizer(BaseOptimizer):
         opacity_reset_interval: int = 3000
         densify_grad_threshold: float = 0.0002
         min_opacity: float = 0.005
-        max_points: int = 2000000  # Maximum number of points allowed
         # Visualization
         enable_densify_vis: bool = False
         vis_every_n: int = 200
@@ -46,10 +46,10 @@ class AtlasGaussianSplattingOptimizer(BaseOptimizer):
         vis_wave_grad_export_ply: bool = True
         vis_wave_coeff_export_ply: bool = True
         vis_pos_cubic_grad: bool = True
-        vis_pos_cubic_grad_every_n: int = 1000
+        vis_pos_cubic_grad_every_n: int = 200
         vis_pos_cubic_grad_export_ply: bool = True
-        vis_viewspace_grad: bool = True
-        vis_viewspace_grad_every_n: int = 1000
+        vis_viewspace_grad: bool = False
+        vis_viewspace_grad_every_n: int = 200
         vis_viewspace_grad_export_ply: bool = True
         vis_viewspace_grad_export_png: bool = True
         # Dynamic visualization
@@ -93,9 +93,9 @@ class AtlasGaussianSplattingOptimizer(BaseOptimizer):
         self.max_radii2D = torch.zeros(num_points).to(self.device)
         self.percent_dense = self.cfg.percent_dense
         self.pos_gradient_accum = torch.zeros((num_points, 1)).to(self.device)
+        self.pos_grad_abs_xy = torch.zeros((num_points, 2), device=self.device)
         self.denom = torch.zeros((num_points, 1)).to(self.device)
         self.opacity_deferred = False
-        self.latest_wave_grad: Optional[torch.Tensor] = None
 
         # Initialize visualization manager.
         self.vis_manager = VisualizationManager(self.point_cloud, self.cfg, self.device)
@@ -141,10 +141,8 @@ class AtlasGaussianSplattingOptimizer(BaseOptimizer):
                 self.max_radii2D[visibility],
                 radii[visibility]
             )
-            self.pos_gradient_accum[visibility] += torch.norm(
-                viewspace_grad[visibility, :2],
-                dim=-1,
-                keepdim=True
+            self.pos_grad_abs_xy[visibility] += torch.abs(
+                viewspace_grad[visibility, :2]
             )
             self.denom[visibility] += 1
 
@@ -187,26 +185,22 @@ class AtlasGaussianSplattingOptimizer(BaseOptimizer):
         """
         with torch.no_grad():
             viewspace_grad = self.accumulate_viewspace_grad(viewspace_points, viewspace_points_grad)
-            if False and self.step % 1000 == 0:
-                # Visualize viewspace gradients.
-                # self.vis_manager.visualize_viewspace_grad(viewspace_grad, self.step)
-                
-                # Handle wave_coefficients gradient visualization.
-                if "wave_coefficients_grad" in kwargs and kwargs["wave_coefficients_grad"] is not None:
-                    wave_grad = kwargs["wave_coefficients_grad"]
-                    self.latest_wave_grad = wave_grad.detach().clone()
-                    self.vis_manager.visualize_wave_coefficients_grad(wave_grad, self.step)
-                else:
-                    self.latest_wave_grad = None
-                
-                # # Handle pos_cubic_node gradient visualization.
-                # if "pos_cubic_node_grad" in kwargs and kwargs["pos_cubic_node_grad"] is not None:
-                #     self.vis_manager.visualize_pos_cubic_node_grad(kwargs["pos_cubic_node_grad"], self.step)
-                
-                if getattr(self.cfg, "vis_wave_coefficients", False):
-                    vis_interval = max(1, getattr(self.cfg, "vis_wave_coeff_every_n", self.cfg.vis_every_n))
-                    if self.step % vis_interval == 0:
-                        self.vis_manager.visualize_wave_coefficients(self.step)
+
+            # Visualize viewspace gradients.
+            self.vis_manager.visualize_viewspace_grad(viewspace_grad, self.step)
+            
+            # Handle wave_coefficients gradient visualization.
+            if "wave_coefficients_grad" in kwargs and kwargs["wave_coefficients_grad"] is not None:
+                self.vis_manager.visualize_wave_coefficients_grad(kwargs["wave_coefficients_grad"], self.step)
+            
+            # Handle pos_cubic_node gradient visualization.
+            if "pos_cubic_node_grad" in kwargs and kwargs["pos_cubic_node_grad"] is not None:
+                self.vis_manager.visualize_pos_cubic_node_grad(kwargs["pos_cubic_node_grad"], self.step)
+            
+            if getattr(self.cfg, "vis_wave_coefficients", False):
+                vis_interval = max(1, getattr(self.cfg, "vis_wave_coeff_every_n", self.cfg.vis_every_n))
+                if self.step % vis_interval == 0:
+                    self.vis_manager.visualize_wave_coefficients(self.step)
             
             self.update_structure(visibility, viewspace_grad, radii, white_bg)
             self.update_hypers()
@@ -222,15 +216,11 @@ class AtlasGaussianSplattingOptimizer(BaseOptimizer):
         step : int
             The current step.
         """
-        # Check if we've reached the maximum number of points
-        current_num_points = len(self.point_cloud)
-        if current_num_points >= self.cfg.max_points:
-            return
-        
         ### set a threshold.
         if step % self.duplicate_interval == 0:
-            grads = self.pos_gradient_accum / self.denom
-            grads[grads.isnan()] = 0.0
+            comps = self.pos_grad_abs_xy / (self.denom + 1e-8)
+            comps[torch.isnan(comps)] = 0
+            grads = torch.linalg.norm(comps, dim=-1, keepdim=True)
             self.densify_clone(grads)
             self.densify_split(grads)
         if step % self.prune_interval == 0:
@@ -243,7 +233,7 @@ class AtlasGaussianSplattingOptimizer(BaseOptimizer):
         """
         opc = self.point_cloud.get_opacity
         opacities_new = inverse_sigmoid(
-            torch.min(opc, torch.ones_like(opc)*0.05)
+            torch.min(opc, torch.ones_like(opc)*0.01)
         )
         self.point_cloud.replace(
             {"opacity": opacities_new},
@@ -306,7 +296,6 @@ class AtlasGaussianSplattingOptimizer(BaseOptimizer):
         )
         return mask
 
-
     def new_pos_scale(self, mask: Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Generate new position and scaling for splitting.
@@ -354,8 +343,7 @@ class AtlasGaussianSplattingOptimizer(BaseOptimizer):
         num1 = len(self.point_cloud)
         mask = self.generate_clone_mask(grads)
         # visualization before structure changes
-        if False and self.step % 1000 == 0:
-            self.vis_manager.visualize_densification(mask=mask, kind="clone", grads=grads, step=self.step)
+        self.vis_manager.visualize_densification(mask=mask, kind="clone", grads=grads, step=self.step)
         atributes = self.point_cloud.select_atributes(mask)
         self.point_cloud.extand_points(atributes, self.optimizer)
         num2 = len(self.point_cloud)
@@ -446,6 +434,7 @@ class AtlasGaussianSplattingOptimizer(BaseOptimizer):
             The mask for valid points.
         """
         self.pos_gradient_accum = self.pos_gradient_accum[valid_points_mask]
+        self.pos_grad_abs_xy = self.pos_grad_abs_xy[valid_points_mask]
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
 
@@ -456,6 +445,7 @@ class AtlasGaussianSplattingOptimizer(BaseOptimizer):
         num_points = len(self.point_cloud)
         self.pos_gradient_accum = torch.zeros(
             (num_points, 1), device=self.device)
+        self.pos_grad_abs_xy = torch.zeros((num_points, 2), device=self.device)
         self.denom = torch.zeros((num_points, 1), device=self.device)
         self.max_radii2D = torch.zeros((num_points), device=self.device)
 

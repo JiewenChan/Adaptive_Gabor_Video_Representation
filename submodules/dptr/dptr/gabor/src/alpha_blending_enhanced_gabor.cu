@@ -12,10 +12,10 @@
 #include <vector>
 #include <math.h>
 
-// 添加Gabor相关常量
-#define TOTAL_NUM_FREQUENCIES 10
+// Add Gabor-related constants.
+#define TOTAL_NUM_FREQUENCIES 2
 #define SELECTED_NUM_FREQUENCIES 2
-const float max_frequency = 10.0f;  // 可根据实际需要调整
+const float max_frequency = 2.0f;  // Adjust as needed.
 
 namespace cg = cooperative_groups;
 
@@ -29,13 +29,15 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
                                    const int *__restrict__ idx_sorted,
                                    const int2 *__restrict__ tile_range,
                                    const float *__restrict__ wave_coefficient,
-                                   const int *__restrict__ wave_coefficient_indices,
+                                   const float *__restrict__ wave_coefficient_indices,
                                    const float bg,
                                    const int C,
                                    const int W,
                                    const int H,
                                    const int K,
                                    const bool enable_truncation,
+                                   const bool use_adaptive_gamma_bias,
+                                   const float sinusoid_gamma,
                                    float *__restrict__ final_T,
                                    int *__restrict__ ncontrib,
                                    int *__restrict__ final_idx,
@@ -62,7 +64,7 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
     __shared__ float3 collected_conic[BLOCK_SIZE];
     __shared__ float collected_opacity[BLOCK_SIZE];
     __shared__ float collected_wave_coefficients[BLOCK_SIZE * SELECTED_NUM_FREQUENCIES];
-    __shared__ int collected_wave_coefficient_indices[BLOCK_SIZE * SELECTED_NUM_FREQUENCIES];
+    __shared__ float collected_wave_coefficient_indices[BLOCK_SIZE * SELECTED_NUM_FREQUENCIES];
 
     float T = 1.0f;
     uint32_t contributor = 0;
@@ -94,41 +96,50 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
             float2 vec = {collected_uv[j].x - pixf.x,
                           collected_uv[j].y - pixf.y};
             
-            // Gabor 核计算
+            // Gabor kernel computation.
             float2 dx = vec;
             
             float a = collected_conic[j].x;  // Σ^{-1}_{11}
             float b = collected_conic[j].y;  // Σ^{-1}_{12} = Σ^{-1}_{21}
             float c = collected_conic[j].z;  // Σ^{-1}_{22}
-            float theta = 0.5f * atan2f(2.0f * b, a - c);; // 方向
+            float theta = 0.5f * atan2f(2.0f * b, a - c);; // Direction.
             float cosr = cos(theta);
             float sinr = sin(theta);
             
-            // 转换坐标到旋转空间
+            // Transform coordinates to rotated space.
             float x_theta = dx.x * cosr + dx.y * sinr;
             float y_theta = -dx.x * sinr + dx.y * cosr;
             
-            // 高斯部分计算
+            // Gaussian component computation.
             float gaussian_part = -0.5f * (collected_conic[j].x * vec.x * vec.x +
                                    collected_conic[j].z * vec.y * vec.y) -
                           collected_conic[j].y * vec.x * vec.y;
             
-            // 跳过高斯部分较弱的点
+            // Skip points with weak Gaussian contribution.
             if (gaussian_part > 0.0f)
                 continue;
             
             float g_factor = exp(gaussian_part);
             
-            // 使用与提供代码相同的Gabor条纹计算
-            float sinusoid_part = 0.0f;
+            // Use the same Gabor stripe computation as the provided code.
+            float sinusoid_part = 0.0f, weight_sum = 0.0f;
             for(int w_idx = 0; w_idx < SELECTED_NUM_FREQUENCIES; w_idx++){
                 // float f = max_frequency * (collected_wave_coefficient_indices[j * SELECTED_NUM_FREQUENCIES + w_idx] + 1) / (float)TOTAL_NUM_FREQUENCIES;
                 float f = max_frequency * (w_idx + 1)/TOTAL_NUM_FREQUENCIES;
-                sinusoid_part += 0.5f + collected_wave_coefficients[j * SELECTED_NUM_FREQUENCIES + w_idx] * cos(f * x_theta);
+                sinusoid_part += collected_wave_coefficients[j * SELECTED_NUM_FREQUENCIES + w_idx] * cos(f * x_theta);
+                weight_sum += collected_wave_coefficients[j * SELECTED_NUM_FREQUENCIES + w_idx];
             }
-            sinusoid_part /= SELECTED_NUM_FREQUENCIES; // 归一化
+            {
+                const float gamma = sinusoid_gamma;
+                float normalized = sinusoid_part / SELECTED_NUM_FREQUENCIES;
+                if (use_adaptive_gamma_bias) {
+                    normalized += gamma +
+                                  (1.0f - gamma) * (1.0f - weight_sum / SELECTED_NUM_FREQUENCIES);
+                }
+                sinusoid_part = normalized; // Normalize.
+            }
             
-            // 直接使用计算的sinusoid_part作为调制因子
+            // Use computed sinusoid_part directly as modulation factor.
             float alpha = min(0.99f, collected_opacity[j] * g_factor * sinusoid_part);
             if (alpha < 1.0 / 255.0)
                 continue;
@@ -186,7 +197,7 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
                                     const int *__restrict__ idx_sorted,
                                     const int2 *__restrict__ tile_range,
                                     const float *__restrict__ wave_coefficient,
-                                    const int *__restrict__ wave_coefficient_indices,
+                                    const float *__restrict__ wave_coefficient_indices,
                                     const float bg,
                                     const int C,
                                     const int W,
@@ -199,7 +210,9 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
                                     float3 *__restrict__ dL_dconic,
                                     float *__restrict__ dL_dopacity,
                                     float *__restrict__ dL_dfeature,
-                                    float *__restrict__ dL_dwave_coefficients) {
+                                    float *__restrict__ dL_dwave_coefficients,
+                                    const bool use_adaptive_gamma_bias,
+                                    const float sinusoid_gamma) {
     auto block = cg::this_thread_block();
     int32_t tile_grid_x = (W + BLOCK_X - 1) / BLOCK_X;
     int32_t tile_id =
@@ -223,7 +236,7 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
     __shared__ float collected_opacity[BLOCK_SIZE];
     __shared__ float collected_feature[CNum * BLOCK_SIZE];
     __shared__ float collected_wave_coefficients[BLOCK_SIZE * SELECTED_NUM_FREQUENCIES];
-    __shared__ int collected_wave_coefficient_indices[BLOCK_SIZE * SELECTED_NUM_FREQUENCIES];
+    __shared__ float collected_wave_coefficient_indices[BLOCK_SIZE * SELECTED_NUM_FREQUENCIES];
 
     const float T_final = inside ? final_T[pix_id] : 0;
     float T = T_final;
@@ -266,42 +279,52 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
             float2 vec = {collected_uv[j].x - pixf.x,
                           collected_uv[j].y - pixf.y};
 
-            // Gabor 核计算
+            // Gabor kernel computation.
             float2 dx = vec;
             
             float a = collected_conic[j].x;  // Σ^{-1}_{11}
             float b = collected_conic[j].y;  // Σ^{-1}_{12} = Σ^{-1}_{21}
             float c = collected_conic[j].z;  // Σ^{-1}_{22}
-            float theta = 0.5f * atan2f(2.0f * b, a - c);; // 方向
+            float theta = 0.5f * atan2f(2.0f * b, a - c);; // Direction.
             float cosr = cos(theta);
             float sinr = sin(theta);
             
-            // 转换坐标到旋转空间
+            // Transform coordinates to rotated space.
             float x_theta = dx.x * cosr + dx.y * sinr;
             float y_theta = -dx.x * sinr + dx.y * cosr;
             
-            // 高斯部分计算
+            // Gaussian component computation.
             float gaussian_part = -0.5f * (collected_conic[j].x * vec.x * vec.x +
                                    collected_conic[j].z * vec.y * vec.y) -
                           collected_conic[j].y * vec.x * vec.y;
             
-            // 跳过高斯部分较弱的点
+            // Skip points with weak Gaussian contribution.
             if (gaussian_part > 0.0f)
                 continue;
             
             float g_factor = exp(gaussian_part);
             
-            // 使用与提供代码相同的Gabor条纹计算
-            float sinusoid_part = 0.0f;
+            // Use the same Gabor stripe computation as the provided code.
+            float sinusoid_part = 0.0f, weight_sum = 0.0f;
             for(int w_idx = 0; w_idx < SELECTED_NUM_FREQUENCIES; w_idx++){
                 // float f = max_frequency * (collected_wave_coefficient_indices[j * SELECTED_NUM_FREQUENCIES + w_idx] + 1) / (float)TOTAL_NUM_FREQUENCIES;
                 float f = max_frequency * (w_idx + 1)/TOTAL_NUM_FREQUENCIES;
-                sinusoid_part += 0.5f + collected_wave_coefficients[j * SELECTED_NUM_FREQUENCIES + w_idx] * cos(f * x_theta);
+                sinusoid_part += collected_wave_coefficients[j * SELECTED_NUM_FREQUENCIES + w_idx] * cos(f * x_theta);
+                weight_sum += collected_wave_coefficients[j * SELECTED_NUM_FREQUENCIES + w_idx];
             }
-            sinusoid_part /= SELECTED_NUM_FREQUENCIES; // 归一化
+            {
+                const float gamma = sinusoid_gamma;
+                float normalized = sinusoid_part / SELECTED_NUM_FREQUENCIES;
+                if (use_adaptive_gamma_bias) {
+                    normalized += gamma +
+                                  (1.0f - gamma) * (1.0f - weight_sum / SELECTED_NUM_FREQUENCIES);
+                }
+                sinusoid_part = normalized; // Normalize.
+            }
             
-            // 直接使用计算的sinusoid_part作为调制因子
-            const float alpha = min(0.99f, collected_opacity[j] * g_factor * sinusoid_part);
+            // Use computed sinusoid_part directly as modulation factor.
+            const float alpha_pre = collected_opacity[j] * g_factor * sinusoid_part;
+            const float alpha = min(0.99f, alpha_pre);
             if (alpha < 1.0 / 255.0)
                 continue;
 
@@ -331,11 +354,12 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
 
             dL_dalpha += (-T_final / (1.f - alpha)) * bg_dot_dpixel;
 
-            // 计算对g_factor和sinusoid_part的导数
-            const float dL_dg_factor = collected_opacity[j] * sinusoid_part * dL_dalpha;
-            const float dL_dsinusoid = collected_opacity[j] * g_factor * dL_dalpha;
+            // Derivatives for g_factor and sinusoid_part (accounting for alpha saturation masking).
+            const float gate_alpha = (alpha_pre < 0.99f) ? 1.0f : 0.0f;
+            const float dL_dg_factor = gate_alpha * (collected_opacity[j] * sinusoid_part * dL_dalpha);
+            const float dL_dsinusoid = gate_alpha * (collected_opacity[j] * g_factor * dL_dalpha);
             
-            // 计算对每个频率分量的导数
+            // Derivatives for each frequency component.
             float dL_dx_theta = 0.0f;
             for(int w_idx = 0; w_idx < SELECTED_NUM_FREQUENCIES; w_idx++){
                 // float f = max_frequency * (collected_wave_coefficient_indices[j * SELECTED_NUM_FREQUENCIES + w_idx] + 1) / (float)TOTAL_NUM_FREQUENCIES;
@@ -343,15 +367,17 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
                 dL_dx_theta += dL_dsinusoid * (-f) * sin(f * x_theta) / SELECTED_NUM_FREQUENCIES;
             }
             
-            // 计算旋转坐标对原始坐标的导数
+            // Derivatives of rotated coords wrt original coords.
             float dx_theta_dvecx = cos(theta);
             float dx_theta_dvecy = sin(theta);
+            // Derivative of x_theta w.r.t. theta to chain stripe gradients to conic(a,b,c).
+            float dx_theta_dtheta = -dx.x * sin(theta) + dx.y * cos(theta);
             
-            // 计算高斯部分对向量的导数
+            // Derivatives of Gaussian term w.r.t. vector.
             float dpower_dvecx = -collected_conic[j].x * vec.x - collected_conic[j].y * vec.y;
             float dpower_dvecy = -collected_conic[j].z * vec.y - collected_conic[j].y * vec.x;
             
-            // 链式法则：组合导数
+            // Chain rule: combine derivatives.
             float dg_factor_dvecx = g_factor * dpower_dvecx;
             float dg_factor_dvecy = g_factor * dpower_dvecy;
             
@@ -365,7 +391,21 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
             atomicAdd(&dL_dabs_uv[global_id].x, fabsf(dL_dvec.x));
             atomicAdd(&dL_dabs_uv[global_id].y, fabsf(dL_dvec.y));
             
-            // 更新对 conic 参数的导数
+            // Backprop stripe direction theta(a,b,c) gradients to conic params.
+            {
+                float u = 2.0f * b;
+                float v = a - c;
+                float denom = u * u + v * v + 1e-6f;
+                float dtheta_da = -0.5f * u / denom;
+                float dtheta_db = v / denom;
+                float dtheta_dc = 0.5f * u / denom;
+                float dL_dtheta = dL_dx_theta * dx_theta_dtheta;
+                atomicAdd(&dL_dconic[global_id].x, dL_dtheta * dtheta_da);
+                atomicAdd(&dL_dconic[global_id].y, dL_dtheta * dtheta_db);
+                atomicAdd(&dL_dconic[global_id].z, dL_dtheta * dtheta_dc);
+            }
+
+            // Update derivatives for conic params (from Gaussian term).
             float dconic_x = -0.5f * vec.x * vec.x;
             float dconic_y = -vec.x * vec.y;
             float dconic_z = -0.5f * vec.y * vec.y;
@@ -374,13 +414,16 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
             atomicAdd(&dL_dconic[global_id].y, dL_dg_factor * g_factor * dconic_y);
             atomicAdd(&dL_dconic[global_id].z, dL_dg_factor * g_factor * dconic_z);
             
-            // 对透明度的导数
-            atomicAdd(&dL_dopacity[global_id], g_factor * sinusoid_part * dL_dalpha);
+            // Derivative for opacity (accounting for alpha saturation masking).
+            atomicAdd(&dL_dopacity[global_id], gate_alpha * (g_factor * sinusoid_part * dL_dalpha));
 
+            const float adaptive_term_grad = use_adaptive_gamma_bias ? -(1.0f - sinusoid_gamma) / SELECTED_NUM_FREQUENCIES : 0.0f;
             for(int w_idx = 0; w_idx < SELECTED_NUM_FREQUENCIES; w_idx++) {
                 // float f = max_frequency * (collected_wave_coefficient_indices[j * SELECTED_NUM_FREQUENCIES + w_idx] + 1) / (float)TOTAL_NUM_FREQUENCIES;
                 float f = max_frequency * (w_idx + 1)/TOTAL_NUM_FREQUENCIES;
-                float dL_dcoefficient = dL_dsinusoid * cos(f * x_theta) / SELECTED_NUM_FREQUENCIES;
+                float dL_dcoefficient = dL_dsinusoid * (
+                    adaptive_term_grad +
+                    cos(f * x_theta) / SELECTED_NUM_FREQUENCIES);
                 atomicAdd(&dL_dwave_coefficients[global_id * SELECTED_NUM_FREQUENCIES + w_idx], dL_dcoefficient);
             }
         }
@@ -400,7 +443,9 @@ alphaBlendingForwardEnhancedGabor(const torch::Tensor &uv,
                      const int W,
                      const int H,
                      const int K,
-                     const bool enable_truncation) {
+                     const bool enable_truncation,
+                     const bool use_adaptive_gamma_bias,
+                     const float sinusoid_gamma) {
     CHECK_INPUT(uv);
     CHECK_INPUT(conic);
     CHECK_INPUT(opacity);
@@ -444,13 +489,15 @@ alphaBlendingForwardEnhancedGabor(const torch::Tensor &uv,
                 idx_sorted.contiguous().data_ptr<int>(),
                 (int2 *)tile_range.contiguous().data_ptr<int>(),
                 wave_coefficient.contiguous().data_ptr<float>(),
-                wave_coefficient_indices.contiguous().data_ptr<int>(),
+                wave_coefficient_indices.contiguous().data_ptr<float>(),
                 bg,
                 C - C0,
                 W,
                 H,
                 K,
                 enable_truncation,
+                use_adaptive_gamma_bias,
+                sinusoid_gamma,
                 final_T.data_ptr<float>(),
                 ncontrib.data_ptr<int>(),
                 final_idx.data_ptr<int>(),
@@ -466,13 +513,15 @@ alphaBlendingForwardEnhancedGabor(const torch::Tensor &uv,
                 idx_sorted.contiguous().data_ptr<int>(),
                 (int2 *)tile_range.contiguous().data_ptr<int>(),
                 wave_coefficient.contiguous().data_ptr<float>(),
-                wave_coefficient_indices.contiguous().data_ptr<int>(),
+                wave_coefficient_indices.contiguous().data_ptr<float>(),
                 bg,
                 C - C0,
                 W,
                 H,
                 K,
                 enable_truncation,
+                use_adaptive_gamma_bias,
+                sinusoid_gamma,
                 final_T.data_ptr<float>(),
                 ncontrib.data_ptr<int>(),
                 final_idx.data_ptr<int>(),
@@ -488,13 +537,15 @@ alphaBlendingForwardEnhancedGabor(const torch::Tensor &uv,
                 idx_sorted.contiguous().data_ptr<int>(),
                 (int2 *)tile_range.contiguous().data_ptr<int>(),
                 wave_coefficient.contiguous().data_ptr<float>(),
-                wave_coefficient_indices.contiguous().data_ptr<int>(),
+                wave_coefficient_indices.contiguous().data_ptr<float>(),
                 bg,
                 C - C0,
                 W,
                 H,
                 K,
                 enable_truncation,
+                use_adaptive_gamma_bias,
+                sinusoid_gamma,
                 final_T.data_ptr<float>(),
                 ncontrib.data_ptr<int>(),
                 final_idx.data_ptr<int>(),
@@ -510,13 +561,15 @@ alphaBlendingForwardEnhancedGabor(const torch::Tensor &uv,
                 idx_sorted.contiguous().data_ptr<int>(),
                 (int2 *)tile_range.contiguous().data_ptr<int>(),
                 wave_coefficient.contiguous().data_ptr<float>(),
-                wave_coefficient_indices.contiguous().data_ptr<int>(),
+                wave_coefficient_indices.contiguous().data_ptr<float>(),
                 bg,
                 C - C0,
                 W,
                 H,
                 K,
                 enable_truncation,
+                use_adaptive_gamma_bias,
+                sinusoid_gamma,
                 final_T.data_ptr<float>(),
                 ncontrib.data_ptr<int>(),
                 final_idx.data_ptr<int>(),
@@ -532,13 +585,15 @@ alphaBlendingForwardEnhancedGabor(const torch::Tensor &uv,
                 idx_sorted.contiguous().data_ptr<int>(),
                 (int2 *)tile_range.contiguous().data_ptr<int>(),
                 wave_coefficient.contiguous().data_ptr<float>(),
-                wave_coefficient_indices.contiguous().data_ptr<int>(),
+                wave_coefficient_indices.contiguous().data_ptr<float>(),
                 bg,
                 C - C0,
                 W,
                 H,
                 K,
                 enable_truncation,
+                use_adaptive_gamma_bias,
+                sinusoid_gamma,
                 final_T.data_ptr<float>(),
                 ncontrib.data_ptr<int>(),
                 final_idx.data_ptr<int>(),
@@ -554,13 +609,15 @@ alphaBlendingForwardEnhancedGabor(const torch::Tensor &uv,
                 idx_sorted.contiguous().data_ptr<int>(),
                 (int2 *)tile_range.contiguous().data_ptr<int>(),
                 wave_coefficient.contiguous().data_ptr<float>(),
-                wave_coefficient_indices.contiguous().data_ptr<int>(),
+                wave_coefficient_indices.contiguous().data_ptr<float>(),
                 bg,
                 C - C0,
                 W,
                 H,
                 K,
                 enable_truncation,
+                use_adaptive_gamma_bias,
+                sinusoid_gamma,
                 final_T.data_ptr<float>(),
                 ncontrib.data_ptr<int>(),
                 final_idx.data_ptr<int>(),
@@ -574,19 +631,21 @@ alphaBlendingForwardEnhancedGabor(const torch::Tensor &uv,
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 alphaBlendingBackwardEnhancedGabor(const torch::Tensor &uv,
-                      const torch::Tensor &conic,
-                      const torch::Tensor &opacity,
-                      const torch::Tensor &feature,
-                      const torch::Tensor &idx_sorted,
-                      const torch::Tensor &tile_range,
-                      const torch::Tensor &wave_coefficient,
-                      const torch::Tensor &wave_coefficient_indices,
-                      const float bg,
-                      const int W,
-                      const int H,
-                      const torch::Tensor &final_T,
-                      const torch::Tensor &ncontrib,
-                      const torch::Tensor &dL_drendered) {
+                     const torch::Tensor &conic,
+                     const torch::Tensor &opacity,
+                     const torch::Tensor &feature,
+                     const torch::Tensor &idx_sorted,
+                     const torch::Tensor &tile_range,
+                     const torch::Tensor &wave_coefficient,
+                     const torch::Tensor &wave_coefficient_indices,
+                     const float bg,
+                     const int W,
+                     const int H,
+                     const torch::Tensor &final_T,
+                     const torch::Tensor &ncontrib,
+                     const torch::Tensor &dL_drendered,
+                     const bool use_adaptive_gamma_bias,
+                     const float sinusoid_gamma) {
     CHECK_INPUT(uv);
     CHECK_INPUT(conic);
     CHECK_INPUT(opacity);
@@ -631,7 +690,7 @@ alphaBlendingBackwardEnhancedGabor(const torch::Tensor &uv,
                 idx_sorted.contiguous().data_ptr<int>(),
                 (int2 *)tile_range.contiguous().data_ptr<int>(),
                 wave_coefficient.contiguous().data_ptr<float>(),
-                wave_coefficient_indices.contiguous().data_ptr<int>(),
+                wave_coefficient_indices.contiguous().data_ptr<float>(),
                 bg,
                 C - C0,
                 W,
@@ -644,7 +703,9 @@ alphaBlendingBackwardEnhancedGabor(const torch::Tensor &uv,
                 (float3 *)dL_dconic.data_ptr<float>(),
                 dL_dopacity.data_ptr<float>(),
                 dL_dfeature_permute.data_ptr<float>() + p_data_offset,
-                dL_dwave_coefficients.data_ptr<float>());
+                dL_dwave_coefficients.data_ptr<float>(),
+                use_adaptive_gamma_bias,
+                sinusoid_gamma);
             C0 += 3;
         } else if (C - C0 <= 6) {
             alphaBlendingBackwardEnhancedGaborCUDAKernel<6><<<tile_grid, block>>>(
@@ -656,7 +717,7 @@ alphaBlendingBackwardEnhancedGabor(const torch::Tensor &uv,
                 idx_sorted.contiguous().data_ptr<int>(),
                 (int2 *)tile_range.contiguous().data_ptr<int>(),
                 wave_coefficient.contiguous().data_ptr<float>(),
-                wave_coefficient_indices.contiguous().data_ptr<int>(),
+                wave_coefficient_indices.contiguous().data_ptr<float>(),
                 bg,
                 C - C0,
                 W,
@@ -669,7 +730,9 @@ alphaBlendingBackwardEnhancedGabor(const torch::Tensor &uv,
                 (float3 *)dL_dconic.data_ptr<float>(),
                 dL_dopacity.data_ptr<float>(),
                 dL_dfeature_permute.data_ptr<float>() + p_data_offset,
-                dL_dwave_coefficients.data_ptr<float>());
+                dL_dwave_coefficients.data_ptr<float>(),
+                use_adaptive_gamma_bias,
+                sinusoid_gamma);
             C0 += 6;
         } else if (C - C0 <= 12) {
             alphaBlendingBackwardEnhancedGaborCUDAKernel<12><<<tile_grid, block>>>(
@@ -681,7 +744,7 @@ alphaBlendingBackwardEnhancedGabor(const torch::Tensor &uv,
                 idx_sorted.contiguous().data_ptr<int>(),
                 (int2 *)tile_range.contiguous().data_ptr<int>(),
                 wave_coefficient.contiguous().data_ptr<float>(),
-                wave_coefficient_indices.contiguous().data_ptr<int>(),
+                wave_coefficient_indices.contiguous().data_ptr<float>(),
                 bg,
                 C - C0,
                 W,
@@ -694,7 +757,9 @@ alphaBlendingBackwardEnhancedGabor(const torch::Tensor &uv,
                 (float3 *)dL_dconic.data_ptr<float>(),
                 dL_dopacity.data_ptr<float>(),
                 dL_dfeature_permute.data_ptr<float>() + p_data_offset,
-                dL_dwave_coefficients.data_ptr<float>());
+                dL_dwave_coefficients.data_ptr<float>(),
+                use_adaptive_gamma_bias,
+                sinusoid_gamma);
             C0 += 12;
         } else if (C - C0 <= 18) {
             alphaBlendingBackwardEnhancedGaborCUDAKernel<18><<<tile_grid, block>>>(
@@ -706,7 +771,7 @@ alphaBlendingBackwardEnhancedGabor(const torch::Tensor &uv,
                 idx_sorted.contiguous().data_ptr<int>(),
                 (int2 *)tile_range.contiguous().data_ptr<int>(),
                 wave_coefficient.contiguous().data_ptr<float>(),
-                wave_coefficient_indices.contiguous().data_ptr<int>(),
+                wave_coefficient_indices.contiguous().data_ptr<float>(),
                 bg,
                 C - C0,
                 W,
@@ -719,7 +784,9 @@ alphaBlendingBackwardEnhancedGabor(const torch::Tensor &uv,
                 (float3 *)dL_dconic.data_ptr<float>(),
                 dL_dopacity.data_ptr<float>(),
                 dL_dfeature_permute.data_ptr<float>() + p_data_offset,
-                dL_dwave_coefficients.data_ptr<float>());
+                dL_dwave_coefficients.data_ptr<float>(),
+                use_adaptive_gamma_bias,
+                sinusoid_gamma);
             C0 += 18;
         } else if (C - C0 <= 24) {
             alphaBlendingBackwardEnhancedGaborCUDAKernel<24><<<tile_grid, block>>>(
@@ -731,7 +798,7 @@ alphaBlendingBackwardEnhancedGabor(const torch::Tensor &uv,
                 idx_sorted.contiguous().data_ptr<int>(),
                 (int2 *)tile_range.contiguous().data_ptr<int>(),
                 wave_coefficient.contiguous().data_ptr<float>(),
-                wave_coefficient_indices.contiguous().data_ptr<int>(),
+                wave_coefficient_indices.contiguous().data_ptr<float>(),
                 bg,
                 C - C0,
                 W,
@@ -744,7 +811,9 @@ alphaBlendingBackwardEnhancedGabor(const torch::Tensor &uv,
                 (float3 *)dL_dconic.data_ptr<float>(),
                 dL_dopacity.data_ptr<float>(),
                 dL_dfeature_permute.data_ptr<float>() + p_data_offset,
-                dL_dwave_coefficients.data_ptr<float>());
+                dL_dwave_coefficients.data_ptr<float>(),
+                use_adaptive_gamma_bias,
+                sinusoid_gamma);
             C0 += 24;
         } else {
             alphaBlendingBackwardEnhancedGaborCUDAKernel<32><<<tile_grid, block>>>(
@@ -756,7 +825,7 @@ alphaBlendingBackwardEnhancedGabor(const torch::Tensor &uv,
                 idx_sorted.contiguous().data_ptr<int>(),
                 (int2 *)tile_range.contiguous().data_ptr<int>(),
                 wave_coefficient.contiguous().data_ptr<float>(),
-                wave_coefficient_indices.contiguous().data_ptr<int>(),
+                wave_coefficient_indices.contiguous().data_ptr<float>(),
                 bg,
                 C - C0,
                 W,
@@ -769,7 +838,9 @@ alphaBlendingBackwardEnhancedGabor(const torch::Tensor &uv,
                 (float3 *)dL_dconic.data_ptr<float>(),
                 dL_dopacity.data_ptr<float>(),
                 dL_dfeature_permute.data_ptr<float>() + p_data_offset,
-                dL_dwave_coefficients.data_ptr<float>());
+                dL_dwave_coefficients.data_ptr<float>(),
+                use_adaptive_gamma_bias,
+                sinusoid_gamma);
             C0 += 32;
         }
     }

@@ -6,7 +6,7 @@ merge them into a temporal point cloud sequence [N,T,3].
 import os, glob
 from functools import partial
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Literal, cast, List, Optional
 
 import numpy as np
 import imageio
@@ -28,7 +28,7 @@ class Video3DFlow:
     depth_range_min: float = 0.5
     depth_range_max: float = 2.0
 
-    def setup(self):
+    def setup(self, test_mode: bool = False):
         self.depth_files = sorted(glob.glob(os.path.join(self.depth_dir, "*.npy")))
         self.tracking_files = sorted(glob.glob(os.path.join(self.tracks_dir, "*.npy")))
         frame_names = [os.path.splitext(p)[0] for p in sorted(os.listdir(self.img_dir))]
@@ -38,31 +38,42 @@ class Video3DFlow:
             self.end = len(frame_names)
         self.frame_names = frame_names[self.start:self.end]
 
-        self.imgs: list[torch.Tensor | None] = [None for _ in self.frame_names]
-        self.depths: list[torch.Tensor | None] = [None for _ in self.frame_names]
-        self.masks: list[torch.Tensor | None] = [None for _ in self.frame_names]
+        self.imgs: List[Optional[torch.Tensor]] = [None for _ in self.frame_names]
+        self.depths: List[Optional[torch.Tensor]] = [None for _ in self.frame_names]
+        self.masks: List[Optional[torch.Tensor]] = [None for _ in self.frame_names]
 
         self.scale = 1
         self.extract_fg = True
 
         self.tracks_cache = {}
-        print("loading tracks data...")
-        for q_idx in tqdm(self.frame_names):
-            for t_idx in self.frame_names:
-                path = f"{self.tracks_dir}/{q_idx}_{t_idx}.npy"
-                if os.path.exists(path):
-                    tracks = np.load(path).astype(np.float32)
-                    self.tracks_cache[f"{q_idx}_{t_idx}"] = tracks
+        # if not test_mode:
+        #     print("loading tracks data...")
+        #     for q_idx in tqdm(self.frame_names):
+        #         for t_idx in self.frame_names:
+        #             path = f"{self.tracks_dir}/{q_idx}_{t_idx}.npy"
+        #             if os.path.exists(path):
+        #                 tracks = np.load(path).astype(np.float32)
+        #                 self.tracks_cache[f"{q_idx}_{t_idx}"] = tracks
 
 
     def get_tracks_3d(
-        self, num_samples: int, start: int = 0, end: int = -1, step: int = 1, **kwargs
+        self, 
+        num_samples: int, 
+        start: int = 0, 
+        end: int = -1, 
+        step: int = 1,
+        min_points_per_query: int = 500,
+        max_points_per_query: int = 2000,
+        **kwargs
     ):
         num_frames = len(self.imgs)
         if end < 0:
             end = num_frames + 1 + end
-        query_idcs = list(range(start, end, step))
-        target_idcs = list(range(start, end, step))
+        query_idcs = [i.item() for i in torch.linspace(start, end-1, num_frames//step).round().to(torch.int32)]
+        target_idcs = [i.item() for i in torch.linspace(start, end-1, num_frames//step).round().to(torch.int32)]
+        print(query_idcs)
+        print(target_idcs)
+        
         masks = torch.stack([self.get_mask(i) for i in target_idcs], dim=0)
         mask_val = 1 if self.extract_fg else -1
         fg_masks = (masks == mask_val).float()
@@ -73,38 +84,62 @@ class Video3DFlow:
         self.depths_min, self.depths_max = depths.min(), depths.max()
         depths = (depths - self.depths_min) / (self.depths_max - self.depths_min) * (range_max - range_min) + range_min
 
-        num_per_query_frame = int(np.ceil(num_samples / len(query_idcs)))
-        cur_num = 0
+        # Dynamically allocate points per query frame.
+        num_queries = len(query_idcs)
+        base_points_per_query = num_samples // num_queries
+        remaining_points = num_samples % num_queries
+        
         tracks_all_queries = []
-        # from each query to all targets
-        for q_idx in query_idcs:
-            # (N, T, 4)
+        total_collected = 0
+        
+        # Collect trajectories for each query frame.
+        if self.extract_fg:
+            print("Extracting fg tracks...")
+        else:
+            print("Extracting bg tracks...")
+        for i, q_idx in tqdm(enumerate(query_idcs)):
+            # Dynamically adjust points per query frame.
+            points_for_this_query = base_points_per_query
+            if i < remaining_points:
+                points_for_this_query += 1
+            
+            # Keep within a reasonable range.
+            points_for_this_query = max(min_points_per_query, 
+                                      min(max_points_per_query, points_for_this_query))
+            
+            # Load trajectory data.
             tracks_2d = self.load_target_tracks(q_idx, target_idcs)
-            num_sel = int(
-                min(num_per_query_frame, num_samples - cur_num, len(tracks_2d))
-            )
-            if num_sel < len(tracks_2d):
-                sel_idcs = np.random.choice(len(tracks_2d), num_sel, replace=False)
+            
+            # If there are too many tracks, randomly sample.
+            if len(tracks_2d) > points_for_this_query * 2:  # Keep some slack.
+                sel_idcs = np.random.choice(len(tracks_2d), points_for_this_query * 2, replace=False)
                 tracks_2d = tracks_2d[sel_idcs]
 
-            cur_num += tracks_2d.shape[0]
             img = self.get_image(q_idx)
             tidx = target_idcs.index(q_idx)  # index in target_idcs
 
-            # consider tracks_3d, colors, visibles, invisibles, confidences
+            # Use the improved track extraction function.
             tracks_tuple = get_tracks_3d_for_query_frame(
-                tidx, img, tracks_2d, depths, fg_masks, extract_fg=self.extract_fg
+                tidx, img, tracks_2d, depths, fg_masks, 
+                extract_fg=self.extract_fg,
+                min_points=min_points_per_query,
+                max_points=max_points_per_query,
+                use_spatial_sampling=True
             )
+            
             tracks_all_queries.append(tracks_tuple)
+            total_collected += tracks_tuple[0].shape[0]
 
+        # Merge results from all query frames.
         tracks_3d, colors, visibles, invisibles, confidences = map(
             partial(torch.cat, dim=0), zip(*tracks_all_queries)
         )
 
+        print(f"Final result: {tracks_3d.shape[0]} total points")
         return tracks_3d, visibles, invisibles, confidences, colors
     
 
-    def load_target_tracks(self, query_index: int, target_indices: list[int], dim: int = 1):
+    def load_target_tracks(self, query_index: int, target_indices: List[int], dim: int = 1):
         """
         tracks are 2d, occs and uncertainties
         :param dim (int), default 1: dimension to stack the time axis

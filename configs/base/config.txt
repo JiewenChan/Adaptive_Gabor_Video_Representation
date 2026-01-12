@@ -1,7 +1,7 @@
 expname = exp
 dataset_types = simpleGS
 gui = False
-data_dir = /home_nfs/jiewen/Splatter_A_Video/src/DAVIS
+data_dir = /project3/jiewen/SaV_all
 
 # training
 num_pairs = 1
@@ -14,14 +14,14 @@ base_idx = 0
 num_imgs = -1
 i_weight = 1000
 num_workers = 4
-num_iters = 5000
+num_iters = 10000
 
 
-loss_rgb_weight = 10.0
-loss_flow_weight = 2.0
+loss_rgb_weight = 20.0
+loss_flow_weight = 0.2
 video_flow_margin = 0.3
 
-gs_config_file = configs/config/config.yaml
+gs_config_file = configs/base/config.yaml
 load_opt = 0
 load_scheduler = 0
 save_dir = "out"

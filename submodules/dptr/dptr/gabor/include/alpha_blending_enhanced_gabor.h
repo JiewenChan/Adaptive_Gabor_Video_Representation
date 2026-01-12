@@ -44,7 +44,9 @@ alphaBlendingForwardEnhancedGabor(const torch::Tensor &uv,
                      const int W,
                      const int H,
                      const int K,
-                     const bool enable_truncation);
+                     const bool enable_truncation,
+                     const bool use_adaptive_gamma_bias,
+                     const float sinusoid_gamma);
 
 /**
  * @brief Launching the CUDA kernel to perform alpha blending in a backward
@@ -69,10 +71,12 @@ alphaBlendingForwardEnhancedGabor(const torch::Tensor &uv,
  * @param[in] dL_drendered          Gradient of the loss with respect to the
  * rendered image.
  * @return std::tuple<torch::Tensor, torch::Tensor, torch::Tensor,
- * torch::Tensor> <br> (1)<b>dL_duv</b> gradients with respect to uv. <br>
+ * torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> <br> (1)<b>dL_duv</b> gradients with respect to uv. <br>
  *         (2)<b>dL_dconic</b> gradients with respect to conic. <br>
  *         (3)<b>dL_dopacity</b> gradients with respect to opacity. <br>
  *         (4)<b>dL_dfeature</b> gradients with respect to feature. <br>
+ *         (5)<b>dL_dwave_coefficients</b> gradients with respect to wave_coefficients. <br>
+ *         (6)<b>dL_dwave_coefficient_indices</b> gradients with respect to wave_coefficient_indices. <br>
  */
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 alphaBlendingBackwardEnhancedGabor(const torch::Tensor &uv,
@@ -88,4 +92,6 @@ alphaBlendingBackwardEnhancedGabor(const torch::Tensor &uv,
                       const int H,
                       const torch::Tensor &final_T,
                       const torch::Tensor &ncontrib,
-                      const torch::Tensor &dL_drendered);
+                      const torch::Tensor &dL_drendered,
+                      const bool use_adaptive_gamma_bias,
+                      const float sinusoid_gamma);

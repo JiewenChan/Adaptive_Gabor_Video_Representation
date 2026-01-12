@@ -338,7 +338,7 @@ class DPTROrthoEnhancedRender(BaseObject):
             raise ValueError("ndc does not have grad")
 
         bg_color = kwargs.get("bg_color", self.bg_color)
-        num_idx = kwargs.get("num_idx", 10)
+        num_idx = kwargs.get("num_idx", 20)
         rendered_features, ncontrib, gs_idx = gs.alpha_blending_enhanced(
             uv, conic, opacity, render_features,
             gaussian_ids_sorted, tile_range, bg_color, 

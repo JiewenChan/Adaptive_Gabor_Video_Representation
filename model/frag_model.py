@@ -1,3 +1,4 @@
+import copy
 import torch
 import torch.nn as nn
 from dataclasses import dataclass, field
@@ -14,14 +15,7 @@ from pointrix.point_cloud import POINTSCLOUD_REGISTRY
 import numpy as np
 from pointrix.utils.dataset.dataset_utils import fov2focal, focal2fov
 from pointrix.dataset.base_data import SimplePointCloud
-from model.atlas_model import SingleAtlasModel, SingleAtlasWithBaseModel, SingleAtlasLBSModel, SingleAtlasBsplineModel, SingleAtlasBsplineWithBaseModel
-from model.dynamic_gaussian_points import DynamicGaussianPointCloud
-from model.dynamic_gaussian_with_base_point_cloud import DynamicGaussianWithBasePointCloud
-from model.dynamic_bspline_gaussian_points import DynamicBsplineGaussianPointCloud
-from model.dynamic_bspline_gaussian_with_base_point_cloud import DynamicBsplineGaussianWithBasePointCloud
-from model.dynamic_bspline_gaussian_all import DynamicBsplineGaussianAll
-# from lbs_gaussian_point import LBSGaussianPointCloud
-# from dust3r_interface import Dust3R
+from model.atlas_model import *
 from itertools import accumulate
 import operator
 
@@ -39,30 +33,14 @@ class FragModel(BaseModel):
 
     cfg: Config
 
-    def setup(self, gs_atlas_cfg_list, base_point_seq_list, white_bg=True):
+    def setup(self, gs_atlas_cfg_list, base_point_seq_list, white_bg=True, num_frames=None):
         base_point_seq = torch.cat(base_point_seq_list, dim=1)
         self.gs_atlas_cfg_list = gs_atlas_cfg_list
         self.atlas_dict = nn.ModuleDict({})
         for gs_atlas_cfg in self.gs_atlas_cfg_list:
             name = gs_atlas_cfg.name
-            if name == "gs_base":
-                self.atlas_dict[name] = SingleAtlasWithBaseModel(self.cfg, gs_atlas_cfg, base_point_seq)
-            elif name == "gs_bspline_base":
-                self.atlas_dict[name] = SingleAtlasWithBaseModel(self.cfg, gs_atlas_cfg, base_point_seq, gaussian_class=DynamicBsplineGaussianWithBasePointCloud)
-            elif name == "gs":
-                point_cloud = None
-                self.atlas_dict[name] = SingleAtlasModel(self.cfg, gs_atlas_cfg, point_cloud)
-            elif name == "gs_bspline":
-                point_cloud = None
-                self.atlas_dict[name] = SingleAtlasModel(self.cfg, gs_atlas_cfg, point_cloud, gaussian_class=DynamicBsplineGaussianPointCloud)
-            elif name == "gs_fg":
-                self.atlas_dict[name] = SingleAtlasLBSModel(self.cfg, gs_atlas_cfg, base_point_seq_list[0])
-            elif name == "gs_bg":
-                self.atlas_dict[name] = SingleAtlasLBSModel(self.cfg, gs_atlas_cfg, base_point_seq_list[1])
-            elif name == "gs_bspline_all":
-                self.atlas_dict[name] = SingleAtlasBsplineWithBaseModel(self.cfg, gs_atlas_cfg, base_point_seq)
-            elif name == "gs_bspline_all_gabor":
-                self.atlas_dict[name] = SingleAtlasBsplineWithBaseModel(self.cfg, gs_atlas_cfg, base_point_seq, gabor=True)
+            if name == "gs_pchip_gabor_all":
+                self.atlas_dict[name] = SingleAtlasPchipWithBaseModel(self.cfg, gs_atlas_cfg, base_point_seq, gabor=True, num_frames=num_frames)
             else:
                 raise ValueError(f"Unknown atlas name: {name}")
         self.focal_y_ratio = 1.0
@@ -151,6 +129,22 @@ class FragModel(BaseModel):
             }
             for x in optimizer_dict[name]["viewspace_points"]:
                 x.retain_grad()
+            
+            # Store wave_coefficients gradients.
+            if "wave_coefficients" in render_results:
+                wave_coefficients = render_results["wave_coefficients"]
+                if wave_coefficients is not None and wave_coefficients.grad is not None:
+                    optimizer_dict[name]["wave_coefficients_grad"] = wave_coefficients.grad[ptnum[idx]:ptnum[idx+1]]
+                else:
+                    optimizer_dict[name]["wave_coefficients_grad"] = None
+            
+            # Store pos_cubic_node gradients.
+            if "pos_cubic_node" in render_results:
+                pos_cubic_node = render_results["pos_cubic_node"]
+                if pos_cubic_node is not None and pos_cubic_node.grad is not None:
+                    optimizer_dict[name]["pos_cubic_node_grad"] = pos_cubic_node.grad[ptnum[idx]:ptnum[idx+1]]
+                else:
+                    optimizer_dict[name]["pos_cubic_node_grad"] = None
         return optimizer_dict
     
     def get_state_dict(self):
@@ -162,5 +156,3 @@ class FragModel(BaseModel):
         for name, model in self.atlas_dict.items():
             model.load_state_dict(state_dict[name], strict)
             model.to('cuda')
-
-

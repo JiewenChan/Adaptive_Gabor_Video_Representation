@@ -1,4 +1,5 @@
 import os
+import glob
 import subprocess
 import random
 import datetime
@@ -10,7 +11,8 @@ import torch.distributed as dist
 from utils.config import config_parser
 from tensorboardX import SummaryWriter
 from loaders.create_training_dataset import get_training_dataset
-from trainer_fragGS import FragTrainer
+# from trainer_ours import FragTrainer
+from trainer_dynamic_init import FragTrainer
 torch.manual_seed(1234)
 # from gui import GUI
 # import dearpygui.dearpygui as dpg
@@ -39,16 +41,32 @@ def seed_worker(worker_id):
 
 def extract_mask_edge(mask, kernel_size=5):
     import cv2
-    # 创建一个卷积核（kernel）用于腐蚀和膨胀操作
+    # Create a convolution kernel for erosion and dilation.
     kernel = np.ones((kernel_size, kernel_size), np.uint8)
-    # 腐蚀操作
+    # Erosion.
     eroded = cv2.erode(mask, kernel, iterations=1)
-    # 膨胀操作
+    # Dilation.
     dilated = cv2.dilate(mask, kernel, iterations=1)
     edges = dilated - eroded
     margin = 5
     edges[:margin, :] = edges[-margin:, :] = edges[:, :margin] = edges[:, -margin:] = 255
     return edges.astype(np.uint8)
+
+
+def render_wave_coefficients_part(trainer):
+    """
+    Render four videos showing where Gaussians fall under different mean wave coefficient ranges.
+    """
+    intervals = [(0.0, 0.25), (0.25, 0.5), (0.5, 0.75), (0.75, 1.0), (0.0, 0.5), (0.0, 0.75), (0.0, 1.0)]
+    trainer.render_wave_coefficients_part(intervals=intervals)
+
+
+def render_wave_coefficients_frame36_fg(trainer, frame_idx=0):
+    """
+    Render the 36th-frame foreground (zero-based index 35) for the same wave coefficient ranges.
+    """
+    intervals = ["[0.0, 0.0]", "(0, 0.1)", "[0.1, 0.3)", "[0.3, 1.0]", "[0.0, 0.1)", "[0.0, 0.3)", "[0.0, 1.0]"]
+    trainer.render_wave_coefficients_frame_mask(frame_idx=frame_idx, intervals=intervals)
 
 
 def test(args):
@@ -105,12 +123,28 @@ def test(args):
         imageio.mimwrite(os.path.join(save_dir, save_name), track_imgs, fps=15)
         print()
 
-    if False:
-        tester.render_video(save_frames=True)
+    if True:
+        tester.render_video(step=0, save_frames=True)
+
+    if True:
+        tester.render_shape_preview(step=1, save_frames=True)
+
+    if True:
+        clip_value = args.flow_clip if args.flow_clip > 0 else None
+        tester.render_flow_maps(stride=max(1, args.flow_stride),
+                                max_pairs=args.max_flow_pairs,
+                                save_raw=args.save_raw_flow,
+                                clip_flow=clip_value)
 
     if False:
         tester.render_part(fg=True, threshold=0.5)
         print()
+
+    if False:
+        render_wave_coefficients_part(tester)
+
+    if True:
+        render_wave_coefficients_frame36_fg(tester)
 
     if False:
         ### for cow
@@ -125,15 +159,7 @@ def test(args):
         print()
 
     if True:
-        tester.get_interpolation_result(scaling=4)
-    
-    if False:
-        
-        mask_path = os.path.join(args.data_dir, args.seq_name, "masks", "00000.png")
-        # edited_img_path = os.path.join(args.data_dir, "sketch_1.png")
-        edited_img_path = os.path.join("/home_nfs/jiewen/test/Splatter_A_Video/src/out/point_bear/image.png")
-        # tester.optimize_appearance_from_mask(mask_path, edited_img_path)
-        tester.optimize_appearance_from_img(edited_img_path)
+        tester.get_interpolation_result(scaling=3)
 
     ##### This code is for canonical space visualization
     #### track-everything's canonical space
@@ -142,12 +168,12 @@ def test(args):
     if False:
         pts_canonical_np, colors_np, mask_np = tester.save_canonical_points(start_id=0, end_id=dataset.num_imgs, step=10)
         if False:
-            masks = [extract_mask_edge((m*255).astype(np.uint8), kernel_size=3) == 0 for m in mask_np]
+            masks = [extract_mask_edge((m*255).astype(np.uint8), kernel_size=3) == 0 for p, m in zip(pts_canonical_np, masks)]
             points = [p[m.reshape(-1)] for p, m in zip(pts_canonical_np, masks)]
             colors = [c[m] for c, m in zip(colors_np, masks)]
             points = np.concatenate(points, axis=0)
             colors = np.concatenate(colors, axis=0)
-        # print()
+        # print() 
         import trimesh
         trimesh.PointCloud(pts_canonical_np.reshape(-1,3), colors=colors_np.reshape(-1,3)).export("./debug_all.ply")
 
@@ -155,6 +181,32 @@ def test(args):
     if True:
         tester.get_nvs_rendered_imgs()
         tester.get_stereo_rendered_imgs()
+
+    ##### Canonical 3D Scene Visualization
+    if False:
+        tester.render_canonical()
+        
+    if False:
+        def _collect_img_paths(folder, exts=(".png", ".jpg", ".jpeg")):
+            paths = []
+            for ext in exts:
+                paths.extend(glob.glob(os.path.join(folder, f"*{ext}")))
+            return sorted(paths)
+
+        mask_path = os.path.join(args.data_dir, args.seq_name, "masks", "00000.png")
+        edited_img_dir = "/project3/jiewen/VideoGaussianTest/blackswan-watercolor"
+        edited_img_paths = _collect_img_paths(edited_img_dir)
+        if len(edited_img_paths) == 0:
+            raise FileNotFoundError(f"No edited images found in {edited_img_dir}")
+        print(edited_img_paths)
+        # tester.optimize_appearance_from_mask(mask_path, edited_img_path)
+        tester.optimize_appearance_from_img(edited_img_paths)
+        
+    if True:
+        mask_path = os.path.join(args.data_dir, args.seq_name, "masks", "00000.png")
+        t_query = None
+        # t_query = torch.linspace(0, tester.num_imgs, tester.num_imgs*5, device='cuda')
+        tester.animate_gaussian_trajectories(mask_path, n=10, t_query=t_query)
 
 
 if __name__ == '__main__':
@@ -166,4 +218,3 @@ if __name__ == '__main__':
         synchronize()
 
     test(args)
-

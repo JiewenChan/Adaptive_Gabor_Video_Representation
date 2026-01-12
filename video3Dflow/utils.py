@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple, TypedDict
+from typing import List, Optional, Tuple, TypedDict, Union
 
 import numpy as np
 import torch
@@ -50,20 +50,80 @@ def postprocess_occlusions(occlusions, expected_dist):
     return visibles
 
 
-def parse_tapir_track_info(occlusions, expected_dist):
+def parse_tapir_track_info(occlusions, expected_dist, threshold=0.3):
     """
-    return:
-        valid_visible: mask of visible & confident points
-        valid_invisible: mask of invisible & confident points
-        confidence: clamped confidence scores (all < 0.5 -> 0)
+    Use minimal filtering to preserve basic quality.
+    
+    Args:
+        occlusions: occlusion values; higher means more occluded
+        expected_dist: expected distance/confidence
+    
+    Returns:
+        visibles: visible mask (occlusions < 0.5)
+        invisibles: invisible mask (occlusions >= 0.5)
+        confidences: confidence scores
     """
-    visiblility = 1 - F.sigmoid(occlusions)
-    confidence = 1 - F.sigmoid(expected_dist)
-    valid_visible = visiblility * confidence > 0.5
-    valid_invisible = (1 - visiblility) * confidence > 0.5
+    # Larger occlusions mean more occluded; (1 - occlusions) indicates visibility.
+    confidence = expected_dist
+    occlusion_score = occlusions
+    valid_invisible = occlusion_score * confidence > threshold
+    valid_visible = (1 - occlusion_score) * confidence > threshold
     # set all confidence < 0.5 to 0
     confidence = confidence * (valid_visible | valid_invisible).float()
     return valid_visible, valid_invisible, confidence
+    
+
+def spatial_grid_sampling(tracks_3d, target_num_points, grid_size=32, image_size=(480, 854)):
+    """
+    Spatial grid sampling to ensure even scene coverage.
+    
+    Args:
+        tracks_3d: [N, T, 3] 3D trajectories
+        target_num_points: target number of points
+        grid_size: grid size
+        image_size: image size (H, W)
+    
+    Returns:
+        selected_indices: selected point indices
+    """
+    if tracks_3d.shape[0] <= target_num_points:
+        return torch.arange(tracks_3d.shape[0])
+    
+    H, W = image_size
+    query_points = tracks_3d[:, 0, :]  # Use 3D points from the query frame.
+    
+    # Project 3D points to a 2D grid.
+    x_coords = (query_points[:, 0] + 1) / 2  # Map [-1,1] to [0,1].
+    y_coords = (query_points[:, 1] + 1) / 2  # Map [-1,1] to [0,1].
+    
+    # Create 2D grid indices.
+    grid_x = (x_coords * (grid_size - 1)).long().clamp(0, grid_size - 1)
+    grid_y = (y_coords * (grid_size - 1)).long().clamp(0, grid_size - 1)
+    grid_indices = grid_x * grid_size + grid_y
+    
+    # Count points per grid.
+    unique_grids, counts = torch.unique(grid_indices, return_counts=True)
+    
+    selected_indices = []
+    points_per_grid = max(1, target_num_points // len(unique_grids))
+    
+    # Select points per grid.
+    for grid_idx in unique_grids:
+        grid_points = torch.where(grid_indices == grid_idx)[0]
+        n_select = min(points_per_grid, len(grid_points))
+        
+        if n_select > 0:
+            # Use depth as a quality metric.
+            grid_depths = query_points[grid_points, 2]
+            _, top_indices = torch.topk(grid_depths, n_select)
+            selected = grid_points[top_indices]
+            selected_indices.append(selected)
+    
+    if selected_indices:
+        result = torch.cat(selected_indices)
+        return result[:target_num_points]  # Ensure we do not exceed target count.
+    else:
+        return torch.arange(min(target_num_points, tracks_3d.shape[0]))
 
 
 def get_tracks_3d_for_query_frame(
@@ -73,20 +133,30 @@ def get_tracks_3d_for_query_frame(
     depths: torch.Tensor,
     masks: torch.Tensor,
     extract_fg: bool = True,
+    min_points: int = 1000,
+    max_points: int = 8000,
+    use_spatial_sampling: bool = True,
 ):
     """
-    :param query_index (int)
-    :param query_img [H, W, 3]
-    :param tracks_2d [N, T, 4]
-    :param depths [T, H, W]
-    :param masks [T, H, W]
-    returns (
-        tracks_3d [N, T, 3]
-        track_colors [N, 3]
-        visibles [N, T]
-        invisibles [N, T]
-        confidences [N, T]
-    )
+    Improved 3D track extraction with looser filtering and better spatial coverage.
+    
+    Args:
+        query_index: query frame index
+        query_img: query frame image [H, W, 3]
+        tracks_2d: 2D tracks [N, T, 4] (x, y, occlusion, confidence)
+        depths: depth maps [T, H, W]
+        masks: masks [T, H, W]
+        extract_fg: whether to extract foreground
+        min_points: minimum points
+        max_points: maximum points
+        use_spatial_sampling: whether to use spatial sampling
+    
+    Returns:
+        tracks_3d: [N, T, 3] 3D tracks
+        track_colors: [N, 3] track colors
+        visibles: [N, T] visibility
+        invisibles: [N, T] invisibility
+        confidences: [N, T] confidences
     """
     T, H, W = depths.shape
     query_img = query_img[None].permute(0, 3, 1, 2)  # (1, 3, H, W)
@@ -96,8 +166,7 @@ def get_tracks_3d_for_query_frame(
         tracks_2d[..., 2],
         tracks_2d[..., 3],
     )
-    # visibles = postprocess_occlusions(occs, dists)
-    # (T, N), (T, N), (T, N)
+    # Parse track info.
     visibles, invisibles, confidences = parse_tapir_track_info(occs, dists)
     # Unproject 2D tracks to 3D.
     # (T, 1, H, W), (T, 1, N, 2) -> (T, 1, 1, N)
@@ -107,6 +176,40 @@ def get_tracks_3d_for_query_frame(
         align_corners=True,
         padding_mode="border",
     )[:, 0, 0]
+    
+    # Handle occluded frames by referencing visible depth from other time points.
+    if invisibles.any():
+        invisible_mask = invisibles.bool()  # [T, N]
+        visible_mask = visibles.bool()
+
+        reference_depths = track_depths.clone()
+        last_visible = torch.full(
+            (track_depths.shape[1],),
+            float("nan"),
+            device=track_depths.device,
+            dtype=track_depths.dtype,
+        )
+        for t in range(track_depths.shape[0]):
+            cur_visible = visible_mask[t]
+            last_visible = torch.where(cur_visible, track_depths[t], last_visible)
+            reference_depths[t] = torch.where(cur_visible, track_depths[t], last_visible)
+
+        next_visible = torch.full(
+            (track_depths.shape[1],),
+            float("nan"),
+            device=track_depths.device,
+            dtype=track_depths.dtype,
+        )
+        for t in range(track_depths.shape[0] - 1, -1, -1):
+            cur_visible = visible_mask[t]
+            next_visible = torch.where(cur_visible, track_depths[t], next_visible)
+            need_fill = torch.isnan(reference_depths[t])
+            reference_depths[t] = torch.where(need_fill, next_visible, reference_depths[t])
+
+        reference_depths = torch.where(
+            torch.isnan(reference_depths), track_depths, reference_depths
+        )
+        track_depths = torch.where(invisible_mask, reference_depths, track_depths)
 
     ############ TODO add interface. we use a orthographic camera here ############
     image_size_wh = torch.tensor([W, H], device=tracks_2d.device)[None]
@@ -133,29 +236,24 @@ def get_tracks_3d_for_query_frame(
     # valid = in_mask_counts > thresh
     valid = is_in_masks[query_index]
 
-    # valid if visible 5% of the time
-    visible_counts = visibles.sum(0)
-    threshold = 0.9 if extract_fg else 0.99
-    valid = valid &(
-        visible_counts
-        # >= min(
-        #     int(0.05 * T),
-        #     visible_counts.float().quantile(0.1).item(),
-        # )
-        >= min(
-            int(threshold * T),
-            visible_counts.float().quantile(threshold).item(),
+    # Minimal filtering: only basic mask checks.
+    if extract_fg:
+        # Foreground: only needs to be inside the query-frame mask.
+        valid = is_in_masks[query_index]
+    else:
+        # Background: inside the mask at any time.
+        valid = is_in_masks.any(0)
+    
+    # If too many points, use spatial sampling.
+    if use_spatial_sampling and valid.sum().item() > max_points:
+        all_tracks_3d = tracks_3d[:, valid]
+        selected_indices = spatial_grid_sampling(
+            all_tracks_3d, max_points, grid_size=32, image_size=(H, W)
         )
-    )
-
-    confidence_counts = (confidences > 0.5).sum(0)
-    valid = valid &(
-        confidence_counts
-        >= min(
-            int(threshold * T),
-            confidence_counts.float().quantile(threshold).item(),
-        )
-    )
+        valid_indices = torch.where(valid)[0]
+        valid_indices = valid_indices[selected_indices]
+        valid = torch.zeros_like(valid)
+        valid[valid_indices] = True
 
     # Get track's color from the query frame.
     # (1, 3, H, W), (1, 1, N, 2) -> (1, 3, 1, N) -> (N, 3)
@@ -263,7 +361,7 @@ def _compute_zero_padding(kernel_size: Tuple[int, int]) -> Tuple[int, int]:
 
 
 def get_binary_kernel2d(
-    window_size: tuple[int, int] | int,
+    window_size: Union[Tuple[int, int], int],
     *,
     device: Optional[torch.device] = None,
     dtype: torch.dtype = torch.float32,
@@ -283,7 +381,7 @@ def get_binary_kernel2d(
     return kernel.view(window_range, 1, ky, kx)
 
 
-def _unpack_2d_ks(kernel_size: tuple[int, int] | int) -> tuple[int, int]:
+def _unpack_2d_ks(kernel_size: Union[Tuple[int, int], int]) -> Tuple[int, int]:
     if isinstance(kernel_size, int):
         ky = kx = kernel_size
     else:

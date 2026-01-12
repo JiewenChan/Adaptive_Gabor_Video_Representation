@@ -71,11 +71,11 @@ def extract_depth(base_dir):
 
 def extract_mask_edge(mask, kernel_size=5):
     import cv2
-    # 创建一个卷积核（kernel）用于腐蚀和膨胀操作
+    # Create a convolution kernel for erosion and dilation.
     kernel = np.ones((kernel_size, kernel_size), np.uint8)
-    # 腐蚀操作
+    # Erosion.
     eroded = cv2.erode(mask, kernel, iterations=1)
-    # 膨胀操作
+    # Dilation.
     dilated = cv2.dilate(mask, kernel, iterations=1)
     edges = dilated - eroded
     margin = 5
@@ -84,11 +84,11 @@ def extract_mask_edge(mask, kernel_size=5):
         
 def extract_mask_edge(mask, kernel_size=5):
     import cv2
-    # 创建一个卷积核（kernel）用于腐蚀和膨胀操作
+    # Create a convolution kernel for erosion and dilation.
     kernel = np.ones((kernel_size, kernel_size), np.uint8)
-    # 腐蚀操作
+    # Erosion.
     eroded = cv2.erode(mask, kernel, iterations=1)
-    # 膨胀操作
+    # Dilation.
     dilated = cv2.dilate(mask, kernel, iterations=1)
     edges = dilated - eroded
     margin = 5

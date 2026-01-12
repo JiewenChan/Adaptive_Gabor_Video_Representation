@@ -80,6 +80,18 @@ def config_parser():
                              'if that value is higher than this threshold, the mapped point is considered as occluded')
     parser.add_argument('--foreground_mask_path', type=str, default='',
                         help='providing the path for foreground mask file for generating trails')
+    parser.add_argument('--render_flow_maps', action='store_true',
+                        help='render predicted optical flow maps during evaluation')
+    parser.add_argument('--flow_stride', type=int, default=1,
+                        help='frame interval when rendering flow maps')
+    parser.add_argument('--max_flow_pairs', type=int, default=-1,
+                        help='limit the number of flow map pairs (-1 renders all available pairs)')
+    parser.add_argument('--save_raw_flow', action='store_true',
+                        help='if specified, also save raw flow tensors as .npy files')
+    parser.add_argument('--flow_clip', type=float, default=-1.0,
+                        help='optional magnitude clipping (in pixels) before converting flow to color')
+    parser.add_argument('--render_full_opacity', action='store_true',
+                        help='during testing, additionally render frames with every Gaussian opacity fixed to 1')
 
     # log
     parser.add_argument('--i_print', type=int, default=100, help='frequency for printing losses')
@@ -88,9 +100,9 @@ def config_parser():
     parser.add_argument('--i_cache', type=int, default=20000, help='frequency for caching current flow predictions')
 
     parser.add_argument("-f", "--fff", help="a dummy argument to fool ipython", default="1")
+    
+    parser.add_argument('--test', action='store_true', help='test mode')
 
     args = parser.parse_args()
     return args
-
-
 

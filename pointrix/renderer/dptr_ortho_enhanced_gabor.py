@@ -222,6 +222,7 @@ class DPTROrthoEnhancedRenderGabor(BaseObject):
                     wave_coefficient_indices=None,
                     scaling_modifier=1.0,
                     render_xyz=False,
+                    rgb=None,
                     **kwargs) -> dict:
         """
         Render the point cloud for one iteration
@@ -274,11 +275,12 @@ class DPTROrthoEnhancedRenderGabor(BaseObject):
         # direction = direction / direction.norm(dim=1, keepdim=True)
         direction = torch.zeros_like(position).cuda()
         direction[:, 2] = 1.0
-        if self.gabor_enable:  
-            rgb = gabor.compute_sh(shs, 3, direction)
-        else:
-            rgb = gs.compute_sh(shs, 3, direction)
-
+        if rgb is None:
+            if self.gabor_enable:  
+                rgb = gabor.compute_sh(shs, 3, direction)
+            else:
+                rgb = gs.compute_sh(shs, 3, direction)
+            
         # (uv, depth) = gabor.project_point(
         #     position,
         #     intrinsic_matrix.cuda(),
@@ -373,7 +375,7 @@ class DPTROrthoEnhancedRenderGabor(BaseObject):
             raise ValueError("ndc does not have grad")
 
         bg_color = kwargs.get("bg_color", self.bg_color)
-        num_idx = kwargs.get("num_idx", 10)
+        num_idx = kwargs.get("num_idx", 20)
         # wave_coefficients_flattened = wave_coefficients.flatten()
         # wave_coefficient_indices_flattened = wave_coefficient_indices.flatten().cuda()
         if self.gabor_enable:
@@ -384,7 +386,9 @@ class DPTROrthoEnhancedRenderGabor(BaseObject):
                 width, height, 
                 ndc,
                 abs_ndc,
-                K=num_idx
+                K=num_idx,
+                use_adaptive_gamma_bias=True,
+                sinusoid_gamma = 0.3
             )
         else:
             rendered_features, ncontrib, gs_idx = gs.alpha_blending_enhanced(
@@ -396,24 +400,24 @@ class DPTROrthoEnhancedRenderGabor(BaseObject):
         
         rendered_features_split = Render_Features.split(rendered_features)
 
-        if self.gabor_enable:
-            rendered_features_ellipse, _, _ = gabor.render_gabor(
-                uv, conic, opacity, render_features,
-                gaussian_ids_sorted, tile_range, 
-                wave_coefficients, wave_coefficient_indices, bg_color, 
-                width, height, 
-                ndc,
-                abs_ndc,
-                K=num_idx
-            )
-        else:
-            rendered_features_ellipse, _, _ = gs.render_gaussian_ellipse(
-                uv, conic, opacity, render_features,
-                gaussian_ids_sorted, tile_range, 
-                bg_color, width, height, 
-                ndc, abs_ndc, K=num_idx
-            )  
-        rendered_features_split.update({"ellipse": rendered_features_ellipse})
+        # if self.gabor_enable:
+        #     rendered_features_ellipse, _, _ = gabor.render_gabor(
+        #         uv, conic, opacity, render_features,
+        #         gaussian_ids_sorted, tile_range, 
+        #         wave_coefficients, wave_coefficient_indices, bg_color, 
+        #         width, height, 
+        #         ndc,
+        #         abs_ndc,
+        #         K=num_idx
+        #     )
+        # else:
+        #     rendered_features_ellipse, _, _ = gs.render_gaussian_ellipse(
+        #         uv, conic, opacity, render_features,
+        #         gaussian_ids_sorted, tile_range, 
+        #         bg_color, width, height, 
+        #         ndc, abs_ndc, K=num_idx
+        #     )  
+        # rendered_features_split.update({"ellipse": rendered_features_ellipse})
         
         ##### render for depth
         bg_color = 1.0
@@ -421,7 +425,9 @@ class DPTROrthoEnhancedRenderGabor(BaseObject):
             rendered_features_depth = gabor.alpha_blending_gabor(
                 uv, conic, opacity, depth,
                 gaussian_ids_sorted, tile_range, wave_coefficients, wave_coefficient_indices, 
-                bg_color, width, height, ndc.detach()
+                bg_color, width, height, ndc.detach(),
+                use_adaptive_gamma_bias=True,
+                sinusoid_gamma = 0.3
             )
         else:
             rendered_features_depth = gs.alpha_blending(
@@ -446,7 +452,9 @@ class DPTROrthoEnhancedRenderGabor(BaseObject):
                 rendered_features_extent = gabor.alpha_blending_gabor(
                     uv, conic, opacity.detach(), render_features_extend,
                     gaussian_ids_sorted, tile_range, wave_coefficients, wave_coefficient_indices,
-                    bg_color, width, height, ndc.detach()
+                    bg_color, width, height, ndc.detach(),
+                    use_adaptive_gamma_bias=True,
+                    sinusoid_gamma = 0.3
                 )
             else:
                 rendered_features_extent = gs.alpha_blending(
@@ -462,6 +470,8 @@ class DPTROrthoEnhancedRenderGabor(BaseObject):
                 "gs_idx": gs_idx
                 }
 
+    
+    
     def render_batch(self, render_dict: dict, batch: List[dict]) -> dict:
         """
         Render the batch of point clouds.
@@ -482,9 +492,11 @@ class DPTROrthoEnhancedRenderGabor(BaseObject):
         """
         rendered_features = {}
         viewspace_points = []
+        viewspace_points_grad = []
         visibilitys = []
         radii = []
         gs_idx = []
+        wave_coefficients = []
         
         for b_i in batch:
             b_i.update(render_dict)
@@ -500,17 +512,31 @@ class DPTROrthoEnhancedRenderGabor(BaseObject):
                 render_results["visibility_filter"].unsqueeze(0))
             radii.append(render_results["radii"].unsqueeze(0))
             gs_idx.append(render_results["gs_idx"].unsqueeze(0))
+            
+            # Add wave_coefficients to the results.
+            if "wave_coefficients" in render_dict:
+                wave_coefficients.append(render_dict["wave_coefficients"])
 
         for feature_name in rendered_features.keys():
             rendered_features[feature_name] = torch.stack(
                 rendered_features[feature_name], dim=0)
 
-        return {**rendered_features,
+        result = {**rendered_features,
                 "viewspace_points": viewspace_points,
                 "visibility": torch.cat(visibilitys).any(dim=0),
                 "radii": torch.cat(radii, 0).max(dim=0).values,
                 "gs_idx": torch.cat(gs_idx, 0)
                 }
+        
+        # If wave_coefficients exist, add them to the results.
+        if wave_coefficients:
+            result["wave_coefficients"] = wave_coefficients[0]  # Assume all batches share the same wave_coefficients.
+        
+        # Add pos_cubic_node to the results.
+        if "pos_cubic_node" in render_dict:
+            result["pos_cubic_node"] = render_dict["pos_cubic_node"]
+            
+        return result
     
     def update_sh_degree(self, step):
         if step % self.cfg.update_sh_iter == 0:

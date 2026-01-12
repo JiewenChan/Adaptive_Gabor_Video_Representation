@@ -4,6 +4,14 @@ trainer:
   output_path: "gs_debug"
   max_steps: 5000
   val_interval: 1000
+  point_cloud_name: "gs_pchip_gabor_all"
+  skip_interval: 1
+  loss:
+    depth: true
+    optical_flow: true
+    pos_curvature: true
+    rot_curvature: false
+    scale_curvature: false
 
   model:
     name: FragModel
@@ -11,7 +19,7 @@ trainer:
     point_cloud:
       point_cloud_type: "DeltaGaussianPointCloud"
       max_sh_degree: 3
-      trainable: true
+      trainable: True
       unwarp_prefix: "point_cloud"
       initializer:
         init_type: 'positive_Z_random'
@@ -30,13 +38,13 @@ trainer:
         percent_dense: 0.001
         split_num: 2
         densify_start_iter: 500
-        densify_stop_iter: 100000
+        densify_stop_iter: 6000
         prune_interval: 100
         duplicate_interval: 100
         opacity_reset_interval: 3000
-        densify_grad_threshold: 0.0002
+        densify_grad_threshold: 0.0008
         # min_opacity: 0.011
-        min_opacity: 0.05
+        min_opacity: 0.011
       params:
         point_cloud.position:
           lr: 0.00006
@@ -50,41 +58,25 @@ trainer:
           lr: 0.005
         point_cloud.rotation:
           lr: 0.001
+        point_cloud.rot_cubic_node:
+          lr: 0.001
         point_cloud.opacity:
           lr: 0.05
-        point_cloud.pos_poly_feat:
-          lr: 0.001
-        point_cloud.pos_fourier_feat:
-          lr: 0.00006
-        point_cloud.rot_poly_feat:
-          lr: 0.001
-        point_cloud.rot_fourier_feat:
-          lr: 0.001
         point_cloud.mask_attribute:
           lr: 0.001
         point_cloud.dino_attribute:
+          lr: 0.001
+        point_cloud.wave_coefficients:
           lr: 0.001
 
   scheduler:
     name: "ExponLRScheduler"
     max_steps: ${trainer.max_steps}
     params:
-      point_cloud.position:
-        init:  0.00006
-        final: 0.0000016
       point_cloud.pos_cubic_node:
         init:  0.00006
         final: 0.0000016
-      point_cloud.pos_poly_feat:
-        init:  0.001
-        final: 0.00001
-      point_cloud.pos_fourier_feat:
-        init:  0.00006
-        final: 0.0000016
-      point_cloud.rot_poly_feat:
-        init:  0.001
-        final: 0.00001
-      point_cloud.rot_fourier_feat:
+      point_cloud.rot_cubic_node:
         init:  0.001
         final: 0.00001
   dataset:
@@ -93,16 +85,17 @@ trainer:
     cached_image: True
     shuffle: True
     batch_size: 1
-    num_workers: 0
+    num_workers: 4
     scale: 1.0
     white_bg: False
 
   renderer:
     # name: "DPTRRender"
     # name: "DPTROrthoRender"
-    name: "DPTROrthoEnhancedRender"
+    name: "DPTROrthoEnhancedRenderGabor"
     max_sh_degree: ${trainer.model.point_cloud.max_sh_degree}
     densify_abs_grad_enable: False
+    gabor_enable: True
   writer:
     writer_type: "TensorboardWriter"
   
@@ -114,5 +107,5 @@ trainer:
 
   render_attributes:
     mask_attribute: 1
-    pos_poly_feat: 3
+    pos_cubic_node: 3
     dino_attribute: 3

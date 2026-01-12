@@ -4,6 +4,8 @@ from pointrix.utils.config import parse_structured
 
 from .gs_optimizer import GaussianSplattingOptimizer
 from .atlas_gs_optimizer import AtlasGaussianSplattingOptimizer
+from .atlas_gs_optimizer_point_insertion import AtlasGaussianSplattingOptimizerWithInsertion
+# from .atlas_gs_optimizer_test import AtlasGaussianSplattingOptimizerTest
 from .optimizer import OptimizerList, BaseOptimizer, OPTIMIZER_REGISTRY
 from .scheduler import ExponLRScheduler, SCHEDULER_REGISTRY
 
