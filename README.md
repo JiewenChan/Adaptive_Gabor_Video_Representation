@@ -1,3 +1,16 @@
+<p align="center">
+  <h1 align="center">AdaGaR: Adaptive Gabor Representation for Dynamic Scene Reconstruction</h1>
+  <p align="center">
+    <a href="https://jiewenchan.github.io/"><strong>Jiewen Chan</strong></a> ·
+    <a href="https://ericzzj1989.github.io/"><strong>Zhenjun Zhao</strong></a> ·
+    <a href="https://yulunalexliu.github.io/"><strong>Yu-Lun Liu</strong></a>
+  </p>
+  <h3 align="center"><a href="https://jiewenchan.github.io/AdaGaR/">🌐 Project Page</a> | <a href="https://arxiv.org/abs/2601.00796">📄 Paper</a></h3>
+</p>
+<br>
+
+>Reconstructing dynamic 3D scenes from monocular videos requires simultaneously capturing high-frequency appearance details and temporally continuous motion. Existing methods using single Gaussian primitives are limited by their low-pass filtering nature, while standard Gabor functions introduce energy instability. Moreover, lack of temporal continuity constraints often leads to motion artifacts during interpolation. We propose AdaGaR, a unified framework addressing both frequency adaptivity and temporal continuity in explicit dynamic scene modeling. We introduce Adaptive Gabor Representation, extending Gaussians through learnable frequency weights and adaptive energy compensation to balance detail capture and stability. For temporal continuity, we employ Cubic Hermite Splines with Temporal Curvature Regularization to ensure smooth motion evolution. An Adaptive Initialization mechanism combining depth estimation, point tracking, and foreground masks establishes stable point cloud distributions in early training. Experiments on Tap-Vid DAVIS demonstrate state-of-the-art performance (PSNR 35.49, SSIM 0.9433, LPIPS 0.0723) and strong generalization across frame interpolation, depth consistency, video editing, and stereo view synthesis.
+
 ## Environment
 
 - gcc 11.5
@@ -21,7 +34,11 @@ Please follow this [instruction](./data_preparation/README.md).
 
 
 ## Training
+```
 python train.py --config configs/base/config.txt --seq_name $seq_name
+```
 
 ## Testing
+```
 python test.py --config configs/base/config.txt --seq_name $seq_name --test
+```
