@@ -12,7 +12,7 @@ from utils.config import config_parser
 from tensorboardX import SummaryWriter
 from loaders.create_training_dataset import get_training_dataset
 # from trainer_ours import FragTrainer
-from trainer_dynamic_init import FragTrainer
+from trainer import FragTrainer
 torch.manual_seed(1234)
 # from gui import GUI
 # import dearpygui.dearpygui as dpg

@@ -109,14 +109,27 @@ class DynamicPchipGaborAll(PointCloud):
     class Config(PointCloud.Config):
         max_sh_degree: int = 3
         lambda_dssim: float = 0.2
+        random_init_position: bool = False
+        random_init_radius: float = 1.0
+        random_init_positive_z: bool = False
 
     cfg: Config
 
     def setup(self, gs_atlas_cfg, base_point_seq=None, num_frames=None):
         base_point_seq = torch.stack([x[~torch.isnan(x).any(dim=1)] for x in base_point_seq], dim=0)
         ### assume first frame is the base frame
-        self.base_position = base_point_seq[0]
-        self.delta_position = base_point_seq - self.base_position[None,...]
+        if self.cfg.random_init_position:
+            num_points = base_point_seq.shape[1]
+            base_position = get_random_points(num_points, self.cfg.random_init_radius).to(
+                base_point_seq.device
+            )
+            if self.cfg.random_init_positive_z:
+                base_position[:, 2] = base_position[:, 2] + 1.0
+            self.base_position = base_position
+            self.delta_position = torch.zeros_like(base_point_seq)
+        else:
+            self.base_position = base_point_seq[0]
+            self.delta_position = base_point_seq - self.base_position[None,...]
         num_points = len(self.base_position)
         
         if num_frames is not None:
@@ -161,10 +174,6 @@ class DynamicPchipGaborAll(PointCloud):
         })
         self.atributes.append({
             'name': 'features',
-            'trainable': self.cfg.trainable,
-        })
-        self.atributes.append({
-            'name': 'scaling',
             'trainable': self.cfg.trainable,
         })
         
@@ -218,13 +227,10 @@ class DynamicPchipGaborAll(PointCloud):
                 fused_color.contiguous().requires_grad_(True)
             )
         )
-        self.scaling = nn.Parameter(
-            scales.contiguous().requires_grad_(False)
-        )
     
         print(f"Initializing num_points: {num_points}")
         self.register_atribute("features_rest", features_rest)
-        # self.register_atribute("scaling", scales, trainable=False)
+        self.register_atribute("scaling", scales)
         self.register_atribute("rotation", rots)
         self.register_atribute("opacity", opacities)
         self.register_atribute("pos_cubic_node", pos_cubic_coeff.reshape(num_points, -1))
