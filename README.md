@@ -34,11 +34,55 @@ Please follow this [instruction](./data_preparation/README.md).
 
 
 ## Training
-```
-python train.py --config configs/base/config.txt --seq_name $seq_name
+
+The codebase uses two levels of configuration:
+
+- `--config`: the experiment / runtime config parsed by `configargparse`. This file controls dataset paths, iteration count, logging, checkpoint loading, and evaluation flags.
+- `--gs_config_file`: the Gabor / representation config. This file controls the point-cloud parameterization, renderer, optimizer, loss toggles, and whether adaptive initialization is used.
+
+Typical examples:
+
+```bash
+python train.py --config configs/blackswan/config.txt --seq_name blackswan
 ```
 
+You can also override individual arguments directly from the command line, for example:
+
+```bash
+python train.py \
+  --config configs/blackswan/config.txt \
+  --seq_name blackswan \
+  --num_iters 10000 \
+  --num_imgs 100 \
+  --save_dir out_debug
+```
+
+Important training arguments:
+
+- `--config`: path to the runtime config file. In the provided examples this is usually `configs/base/config.txt`, `configs/bspline/config.txt`, or `configs/cubic/config.txt`.
+- `--gs_config_file`: path to the Gaussian representation YAML. This is usually already set inside `config.txt`, but can be overridden manually.
+- `--data_dir`: root directory containing all sequences.
+- `--seq_name`: sequence name under `data_dir`. The actual input path is resolved as `data_dir/seq_name/...`.
+- `--save_dir`: root output directory. Results are written to `save_dir/<expname>_<seq_name>`.
+- `--expname`: experiment prefix used in output and log directory names.
+- `--ckpt_path`: load a specific checkpoint instead of automatically picking the latest checkpoint in the output directory.
+- `--no_reload`: disable checkpoint reloading even if checkpoints already exist.
+- `--num_iters`: number of training iterations.
+
 ## Testing
+
+Typical evaluation command:
+
+```bash
+python test.py --config configs/blackswan/config.txt --seq_name blackswan --test
 ```
-python test.py --config configs/base/config.txt --seq_name $seq_name --test
-```
+
+Important testing arguments:
+
+- `--test`: enables test mode. This skips adaptive track extraction for training and uses the evaluation code path.
+
+Additional notes:
+
+- Outputs are saved under `save_dir/<expname>_<seq_name>/`.
+- `test.py` reuses the same config system as training, so training-time arguments such as `num_imgs`, `base_idx`, and `down_scale` also affect evaluation.
+- If you want to compare different motion parameterizations fairly, keep `config.txt` identical except for `gs_config_file`.

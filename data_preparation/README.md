@@ -38,25 +38,49 @@ python compute_depth.py --img_dir $data_root$/images --out_raw_dir $data_root$/d
 The video should be extracted to frames first. Then object masks are extracted.
 
 
-The dataset is prepared in the following format
+The dataset is prepared in the following format.
+Here `data_root` should point to a single sequence directory such as `data/bear`.
+
+Reference example from `data/`:
+
+```text
+data/
+└── bear/
+    ├── images/
+    │   ├── 00000.jpg
+    │   ├── 00001.jpg
+    │   └── ...
+    ├── masks/
+    │   ├── 00000.png
+    │   ├── 00001.png
+    │   └── ...
+    ├── aligned_depth_anything_v2/
+    │   ├── 00000.npy
+    │   ├── 00001.npy
+    │   └── ...
+    ├── marigold/
+    │   └── depth_npy/
+    │       ├── 00000_pred.npy
+    │       ├── 00001_pred.npy
+    │       └── ...
+    ├── alltracker/
+    │   ├── 00000_00000.npy
+    │   ├── 00000_00001.npy
+    │   ├── 00001_00000.npy
+    │   └── ...
+    ├── unidepth_disp/
+    │   ├── 00000.npy
+    │   ├── 00001.npy
+    │   └── ...
+    └── depth_anything_v2/
+        ├── 00000.png
+        ├── 00001.png
+        └── ...
 ```
-- data_root
-    - images
-        - 00000.png
-        - ...
-    - masks
-        - 00000.png
-        - ...
-    - aligned_depth_anything_v2
-        - 00000.npy
-    - marigold
-        - depth_npy
-            - 00000_pred.npy
-            - ...
-    - alltracker
-        - 00000_00000.npy
-        - 00000_00001.npy
-        - ...
-    - unidepth_disp (not used in training)
-    - depth_anything_v2 (not used in training)
-```
+
+Naming rules:
+
+- Frame names should be zero-padded and consistent across all folders, for example `00000`, `00001`, `00002`, ...
+- The same frame index must refer to the same image in `images/`, `masks/`, `aligned_depth_anything_v2/`, `marigold/depth_npy/`, and `unidepth_disp/`.
+- `alltracker/` should contain dense pairwise tracking files named as `{query}_{target}.npy`.
+- `marigold/depth_npy/` uses the suffix `_pred.npy`, while most other frame-wise folders use plain frame ids such as `00000.npy` or `00000.png`.
