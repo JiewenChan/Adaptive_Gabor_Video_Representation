@@ -18,7 +18,9 @@ python compute_depth.py --img_dir $data_root$/images --out_raw_dir $data_root$/d
 
     ### AllTracker demo
 
-    Generate per-frame tracking outputs as `.pth` files for all query/target pairs.
+    First follow the environment setup instructions in `data_preparation/alltracker/README.md` to install the AllTracker dependencies.
+
+    After the environment is ready, run the demo below to generate per-frame tracking outputs as `.pth` files for all query/target pairs.
 
     ```
     python alltracker/demo.py --input_path /path/to/video.mp4 --output_path /path/to/out_dir
