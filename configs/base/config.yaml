@@ -6,11 +6,12 @@ trainer:
   val_interval: 1000
   point_cloud_name: "gs_pchip_gabor_all"
   skip_interval: 1
+  use_adaptive_initialization: true
   loss:
     depth: true
     optical_flow: true
     pos_curvature: true
-    rot_curvature: false
+    rot_curvature: true
     scale_curvature: false
 
   model:

@@ -86,3 +86,33 @@ Additional notes:
 - Outputs are saved under `save_dir/<expname>_<seq_name>/`.
 - `test.py` reuses the same config system as training, so training-time arguments such as `num_imgs`, `base_idx`, and `down_scale` also affect evaluation.
 - If you want to compare different motion parameterizations fairly, keep `config.txt` identical except for `gs_config_file`.
+
+## Output
+
+All training and testing results are written under:
+
+```text
+<save_dir>/<expname>_<seq_name>/
+```
+
+For example, if `save_dir=out`, `expname=exp`, and `seq_name=blackswan`, the output directory will be:
+
+```text
+out/exp_blackswan/
+```
+
+Common files and folders:
+
+- `args.txt`: a plain-text dump of the parsed command-line / configargparse arguments used in the run.
+- `config.txt`: a copy of the runtime config passed through `--config`.
+- `vis/`: visualization outputs generated during training and testing.
+- `nvs.mp4`: novel-view synthesis video.
+- `stereo.mp4`: stereo rendering video.
+
+Typical contents of `vis/`:
+
+- `render_<iter>.mp4`: rendered RGB video.
+- `depth_<iter>.mp4`: rendered depth video.
+- `frames_<iter>/`: per-frame RGB images exported when `save_frames=True`.
+- `depth_frames_<iter>/`: per-frame depth images exported when `save_frames=True`.
+- `new_interp_<n>_render.mp4`: interpolated video results.

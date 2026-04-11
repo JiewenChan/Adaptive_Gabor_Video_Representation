@@ -165,6 +165,7 @@ class FragTrainer:
         val_interval: int = 2000
         spatial_lr_scale: bool = True
         skip_interval: int = 1
+        use_adaptive_initialization: bool = True
 
         # Progress bar
         bar_upd_interval: int = 10
@@ -335,7 +336,12 @@ class FragTrainer:
         # tracking_folder = f"/home_nfs/jiewen/alltracker/{self.seq_name}"
         frames_folder = self.img_dir
         mask_folder = self.mask_dir
-        from video3Dflow.adaptive_video_3d_flow import AdaptiveVideo3DFlow as Video3DFlow
+        if self.cfg.use_adaptive_initialization:
+            from video3Dflow.adaptive_video_3d_flow import AdaptiveVideo3DFlow as Video3DFlow
+        else:
+            from video3Dflow.video_3d_flow import Video3DFlow
+
+        print(f"Using adaptive initialization: {self.cfg.use_adaptive_initialization}")
         self.video_3d_flow = Video3DFlow(depth_folder, tracking_folder, frames_folder, mask_folder)
         self.video_3d_flow.setup(test_mode=self.args.test)
         
@@ -1049,18 +1055,6 @@ class FragTrainer:
                     imageio.mimwrite(os.path.join(vis_dir, '{}_depth{:06d}.mp4'.format(self.seq_name, step)),
                                         depths_np,
                                         quality=8, fps=4)
-                ### save tracking result
-                save_dir = os.path.join(self.out_dir, 'tracking')
-                os.makedirs(save_dir, exist_ok=True)
-                # for i, img in enumerate(track_imgs):
-                #     imageio.imwrite(os.path.join(save_dir, f'{step}_{i}.png'), img)
-                # track_imgs = self.draw_pixel_trajectory(use_mask=True)
-                # track_imgs = [x[:,self.w:] for x in track_imgs]
-                # imageio.mimwrite(os.path.join(save_dir, f'{step}.mp4'), track_imgs, fps=10)
-                # track_imgs = self.draw_pixel_trajectory(use_mask=False)
-                # track_imgs = [x[:,self.w:] for x in track_imgs]
-                # imageio.mimwrite(os.path.join(save_dir, f'{step}_no_mask.mp4'), track_imgs, fps=10)
-
                 ### save video render result
                 self.render_video(step, save_frames=True)
                 self.get_interpolation_result(scaling=4, save_path=os.path.join(vis_dir, f'interp_{step:06d}.mp4'))
@@ -1069,7 +1063,7 @@ class FragTrainer:
                 # self.render_part(fg=False, threshold=0.5)
                 
                 fpath = os.path.join(self.out_dir, 'model_{:06d}.pth'.format(step))
-                self.save_model(fpath)
+                # self.save_model(fpath)
                 
 
     def save_model(self, path: Path = None) -> None:

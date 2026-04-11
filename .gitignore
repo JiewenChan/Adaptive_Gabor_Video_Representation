@@ -1,9 +1,7 @@
 __pycache__
 logs
 out
-configs/*
 for_interp/*
-data/*
 output
 output*
 out/*
