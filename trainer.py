@@ -1063,7 +1063,7 @@ class FragTrainer:
                 # self.render_part(fg=False, threshold=0.5)
                 
                 fpath = os.path.join(self.out_dir, 'model_{:06d}.pth'.format(step))
-                # self.save_model(fpath)
+                self.save_model(fpath)
                 
 
     def save_model(self, path: Path = None) -> None:

@@ -81,10 +81,7 @@ def test(args):
     # tester = BaseTrainer(args)
 
     if True:
-        tester.render_video(step=0, save_frames=True)
-
-    if True:
-        tester.render_shape_preview(step=1, save_frames=True)
+        tester.render_video(step=0, save_frames=False)
 
     if False:
         tester.render_part(fg=True, threshold=0.5)

@@ -12,7 +12,7 @@ use_count_map = True
 i_img = 100
 base_idx = 0
 num_imgs = -1
-i_weight = 1000
+i_weight = 5000
 num_workers = 4
 num_iters = 10000
 
